@@ -1,0 +1,33 @@
+# Node
+*.log
+*.log.*
+node_modules
+
+out/
+dist/
+code.js
+code.ts
+
+
+venv/
+/venv/
+
+node_modules/
+/node_modules/
+
+.env
+.env*
+.env /*
+
+empty.json
+just.txt
+manifest.json
+package-lock.json
+package.json
+README.md 
+ui.html
+tsconfig.json 
+
+/__pycache__/
+__pycache__/
+
