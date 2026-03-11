@@ -1,18 +1,20 @@
 import os
 import json
+import re
 import time
-import base64
 import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-from planner import run_planner
-from coding import generate_page_nodes
-import re
+from planner  import run_planner
+from coding   import generate_page_nodes
+from analyzer import run_analyze, AnalyzeRequest
+from nav_extractor import build_nav_context, build_nav_prompt_block
+import logger as log
 
-app = FastAPI(title="Figma AI Backend")
+app = FastAPI(title="Worktual AI Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,7 +23,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── How many children to send per chunk ──────────────────────────
 CHILDREN_PER_CHUNK = 8
 
 
@@ -30,173 +31,28 @@ class PromptRequest(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────
-# /analyze  —  Accept file (image / PDF / text), analyze with
-#              Gemini Vision / text, then return:
-#                - analysis: human-readable description
-#                - generated_prompt: a design prompt for /generate
-# ─────────────────────────────────────────────────────────────────
-
-class AnalyzeRequest(BaseModel):
-    mode: str = "replicate"           # replicate | improve | inspire
-    instruction: Optional[str] = ""  # extra user instructions
-    filename: Optional[str] = ""
-    file_type: Optional[str] = ""
-
-    # ONE of these will be present:
-    file_base64: Optional[str] = None   # base64 string (images / PDF)
-    media_type: Optional[str] = None    # e.g. "image/png", "application/pdf"
-    file_text: Optional[str] = None     # plain text (txt / md / csv / docx)
-
-
-ANALYZE_SYSTEM_PROMPT = """You are an expert UI/UX designer and design analyst.
-
-You will receive either:
-  (a) A screenshot or image of an existing design / website / app, OR
-  (b) A text document (requirements, spec, copy, CSV data, etc.)
-
-Your task: carefully analyze the input and produce TWO outputs.
-
-── OUTPUT FORMAT (strict JSON, no markdown fences) ──
-{
-  "analysis": "A concise, insightful 2–4 sentence description of what you see / read and the key design/content observations.",
-  "generated_prompt": "A rich, detailed prompt (100–200 words) that will be fed into a Figma design generator. The prompt must describe a complete, professional website or app UI including: page sections, layout, typography style, color palette, imagery style, component types, and any domain-specific content."
-}
-
-── MODES ──
-replicate : The generated_prompt should faithfully describe recreating the input as a Figma design.
-improve   : The generated_prompt should describe an enhanced, more polished version of the input.
-inspire   : The generated_prompt should describe a new, creative design inspired by the input's theme/content.
-
-── RULES ──
-- Output ONLY valid JSON. No explanation outside the JSON.
-- generated_prompt must be self-contained (no references to "the uploaded image").
-- generated_prompt must specify a real website type (portfolio, SaaS landing page, dashboard, e-commerce, etc.)
-- Include color palette hints, typography style, and section names in generated_prompt.
-"""
-
-
-@app.post("/analyze")
-async def analyze_file(request: AnalyzeRequest):
-    """
-    Analyze an uploaded file (image, PDF, or text) with Gemini,
-    then return a design analysis and a generated prompt for /generate.
-    """
-    if not request.file_base64 and not request.file_text:
-        raise HTTPException(status_code=400, detail="No file content provided")
-
-    from coding import client as gemini_client
-
-    planner_model = os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.0-flash")
-
-    instruction_block = ""
-    if request.instruction:
-        instruction_block = f"\nUSER INSTRUCTIONS: {request.instruction}\n"
-
-    mode_block = f"MODE: {request.mode}\n"
-
-    print(f"\n[/analyze] mode={request.mode} file={request.filename} type={request.file_type}")
-
-    try:
-        # ── Build Gemini content parts ────────────────────────────
-        contents = []
-
-        if request.file_base64:
-            # Image or PDF — use Gemini's multimodal input
-            media_type = request.media_type or "image/png"
-
-            # Gemini accepts inline_data for images
-            # For PDF we still send as image/pdf (Gemini Flash supports it)
-            image_part = {
-                "inline_data": {
-                    "mime_type": media_type,
-                    "data": request.file_base64,
-                }
-            }
-            text_part = (
-                f"{ANALYZE_SYSTEM_PROMPT}\n"
-                f"{mode_block}{instruction_block}\n"
-                f"Filename: {request.filename}\n\n"
-                "Analyze the attached file and return the JSON object."
-            )
-            contents = [image_part, text_part]
-
-        elif request.file_text:
-            # Plain text document
-            # Truncate to avoid token limits (keep first ~8000 chars)
-            text_snippet = request.file_text[:8000]
-            if len(request.file_text) > 8000:
-                text_snippet += "\n\n[... document truncated ...]"
-
-            full_text = (
-                f"{ANALYZE_SYSTEM_PROMPT}\n"
-                f"{mode_block}{instruction_block}\n"
-                f"Filename: {request.filename}\n\n"
-                f"DOCUMENT CONTENT:\n{text_snippet}\n\n"
-                "Analyze this document and return the JSON object."
-            )
-            contents = [full_text]
-
-        # ── Call Gemini ───────────────────────────────────────────
-        response = gemini_client.models.generate_content(
-            model=planner_model,
-            contents=contents,
-            config={"temperature": 0.4},
-        )
-
-        raw = response.text.strip()
-        print(f"[/analyze] Gemini response: {len(raw)} chars")
-
-        # ── Parse JSON ────────────────────────────────────────────
-        # Strip possible markdown fences
-        cleaned = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
-        start = cleaned.find('{')
-        end   = cleaned.rfind('}')
-        if start != -1 and end != -1:
-            cleaned = cleaned[start:end + 1]
-
-        try:
-            parsed = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # If Gemini returned plain text instead of JSON, wrap it
-            print(f"[/analyze] JSON parse failed, wrapping raw response")
-            parsed = {
-                "analysis": raw[:500],
-                "generated_prompt": raw if len(raw) < 1000 else raw[:800],
-            }
-
-        analysis  = parsed.get("analysis", "")
-        gen_prompt = parsed.get("generated_prompt", "")
-
-        # Enhance the prompt with mode context if it's too short
-        if len(gen_prompt) < 50:
-            gen_prompt = f"Create a modern, professional website design. {gen_prompt}"
-
-        # Append any extra user instruction to the generated prompt
-        if request.instruction:
-            gen_prompt += f". Additional requirements: {request.instruction}"
-
-        print(f"[/analyze] ✅ analysis={len(analysis)}ch prompt={len(gen_prompt)}ch")
-
-        return JSONResponse({
-            "success":          True,
-            "mode":             request.mode,
-            "filename":         request.filename,
-            "analysis":         analysis,
-            "generated_prompt": gen_prompt,
-        })
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
-
-
-# ─────────────────────────────────────────────────────────────────
 # /  —  Health check
 # ─────────────────────────────────────────────────────────────────
 @app.get("/")
 def health():
+    log.info("HEALTH", "Health check requested")
     return {"status": "running"}
+
+
+# ─────────────────────────────────────────────────────────────────
+# /logs  —  Return recent in-memory log entries
+# ─────────────────────────────────────────────────────────────────
+@app.get("/logs")
+def get_logs(n: int = 200):
+    return JSONResponse({"logs": log.get_recent(n)})
+
+
+# ─────────────────────────────────────────────────────────────────
+# /analyze
+# ─────────────────────────────────────────────────────────────────
+@app.post("/analyze")
+async def analyze_file(request: AnalyzeRequest):
+    return await run_analyze(request)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -210,27 +66,34 @@ async def plan_route(request: PromptRequest):
 
 
 # ─────────────────────────────────────────────────────────────────
-# /generate — SSE stream, ONE page at a time, children chunked
+# /generate — SSE stream, one page at a time, children chunked
 # ─────────────────────────────────────────────────────────────────
 @app.post("/generate")
 async def generate(request: PromptRequest):
     if not request.prompt.strip():
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
 
-    print(f"\n[/generate] {request.prompt}\n")
+    log.info("GENERATE", f"Request received — prompt: {request.prompt[:80]!r}")
 
     async def stream_pages():
         start = time.time()
         try:
+            # ── Planning ─────────────────────────────────────────
             yield sse("status", {"message": "Planning your design..."})
+            yield sse_log(log.info("GENERATE", "Starting planner..."))
+
             plan = await run_planner(request.prompt)
 
+            yield sse_log(log.success("GENERATE",
+                f"Plan ready: {plan['project_title']!r} ({plan['total_pages']} pages)"
+            ))
             yield sse("plan_ready", {
                 "project_title": plan["project_title"],
                 "total_pages":   plan["total_pages"],
                 "pages": [{"id": p["id"], "name": p["name"]} for p in plan["pages"]],
             })
 
+            # ── Page generation ───────────────────────────────────
             generated = 0
             for i, page in enumerate(plan["pages"]):
                 n     = i + 1
@@ -242,27 +105,33 @@ async def generate(request: PromptRequest):
                     "total_pages":  total,
                     "page_name":    page["name"],
                 })
+                yield sse_log(log.info("GENERATE",
+                    f"[{n}/{total}] Starting page={page['name']!r}"
+                ))
 
                 try:
-                    result = await generate_page_nodes(
+                    result   = await generate_page_nodes(
                         page=page,
                         project_title=plan["project_title"],
                         user_prompt=request.prompt,
                     )
-
                     frame    = result["frame"]
                     children = frame.get("children", [])
                     chunks   = _chunk_list(children, CHILDREN_PER_CHUNK)
                     n_chunks = len(chunks)
 
+                    yield sse_log(log.info("GENERATE",
+                        f"Streaming page={page['name']!r} — {len(children)} elements in {n_chunks} chunks"
+                    ))
+
                     yield sse("page_start", {
-                        "page_id":      result["page_id"],
-                        "page_name":    result["page_name"],
-                        "page_number":  n,
-                        "total_pages":  total,
-                        "theme":        result["theme"],
+                        "page_id":        result["page_id"],
+                        "page_name":      result["page_name"],
+                        "page_number":    n,
+                        "total_pages":    total,
+                        "theme":          result["theme"],
                         "total_children": len(children),
-                        "total_chunks": n_chunks,
+                        "total_chunks":   n_chunks,
                         "frame_meta": {
                             "type":            frame["type"],
                             "name":            frame["name"],
@@ -276,14 +145,16 @@ async def generate(request: PromptRequest):
                         chunk_payload = json.dumps({
                             "type": "page_chunk",
                             "payload": {
-                                "page_id":     result["page_id"],
-                                "chunk_index": ci,
+                                "page_id":      result["page_id"],
+                                "chunk_index":  ci,
                                 "total_chunks": n_chunks,
-                                "children":    chunk,
+                                "children":     chunk,
                             }
                         })
                         if len(chunk_payload) > 16000:
-                            print(f"[WARN] Chunk {ci} is {len(chunk_payload):,} chars — oversized element(s)")
+                            yield sse_log(log.warn("GENERATE",
+                                f"Chunk {ci} is {len(chunk_payload):,} chars — oversized"
+                            ))
                         yield f"data: {chunk_payload}\n\n"
 
                     yield sse("page_end", {
@@ -294,20 +165,27 @@ async def generate(request: PromptRequest):
                     })
 
                     generated += 1
-                    print(f"[STREAM] ✅ '{page['name']}' sent ({n_chunks} chunks, {len(children)} children)")
+                    yield sse_log(log.success("GENERATE",
+                        f"Page={page['name']!r} fully sent ({n_chunks} chunks)"
+                    ))
 
-                except Exception as e:
+                except Exception as exc:
                     import traceback
                     traceback.print_exc()
-                    print(f"[STREAM] ❌ '{page['name']}': {e}")
+                    yield sse_log(log.error("GENERATE",
+                        f"Page={page['name']!r} failed — {exc}"
+                    ))
                     yield sse("page_error", {
                         "page_id":    page["id"],
                         "page_name":  page["name"],
                         "page_number": n,
-                        "error":      str(e),
+                        "error":      str(exc),
                     })
 
             elapsed = round(time.time() - start, 1)
+            yield sse_log(log.success("GENERATE",
+                f"Complete — {generated}/{plan['total_pages']} pages in {elapsed}s"
+            ))
             yield sse("complete", {
                 "project_title":   plan["project_title"],
                 "total_pages":     plan["total_pages"],
@@ -316,10 +194,11 @@ async def generate(request: PromptRequest):
                 "message": f"✅ {generated}/{plan['total_pages']} pages generated in {elapsed}s",
             })
 
-        except Exception as e:
+        except Exception as exc:
             import traceback
             traceback.print_exc()
-            yield sse("error", {"message": str(e)})
+            yield sse_log(log.error("GENERATE", f"Fatal error — {exc}"))
+            yield sse("error", {"message": str(exc)})
 
     return StreamingResponse(
         stream_pages(),
@@ -340,7 +219,7 @@ async def generate_full(request: PromptRequest):
     if not request.prompt.strip():
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
 
-    print(f"\n[/generate-full] {request.prompt}\n")
+    log.info("GENERATE-FULL", f"Request — prompt: {request.prompt[:80]!r}")
     start  = time.time()
     plan   = await run_planner(request.prompt)
     frames = []
@@ -353,11 +232,14 @@ async def generate_full(request: PromptRequest):
                 user_prompt=request.prompt,
             )
             frames.append(result["frame"])
-            print(f"[generate-full] ✅ '{page['name']}' ({i+1}/{plan['total_pages']})")
-        except Exception as e:
-            print(f"[generate-full] ❌ '{page['name']}': {e}")
+            log.success("GENERATE-FULL",
+                f"Page={page['name']!r} done ({i+1}/{plan['total_pages']})"
+            )
+        except Exception as exc:
+            log.error("GENERATE-FULL", f"Page={page['name']!r} failed — {exc}")
 
     elapsed = round(time.time() - start, 1)
+    log.success("GENERATE-FULL", f"Done — {len(frames)} pages in {elapsed}s")
 
     return JSONResponse({
         "success":        True,
@@ -426,11 +308,11 @@ def _make_routes(pages: list[dict]) -> list[dict]:
         if not pascal or not pascal[0].isalpha():
             pascal = f"Page{i+1}"
         routes.append({
-            "page_name": name,
-            "component_name": pascal,
-            "route_path": "/" if i == 0 else f"/{slug}",
-            "slug_path": f"/{slug}",
-            "file_name": f"pages/{pascal}.jsx",
+            "page_name":       name,
+            "component_name":  pascal,
+            "route_path":      "/" if i == 0 else f"/{slug}",
+            "slug_path":       f"/{slug}",
+            "file_name":       f"pages/{pascal}.jsx",
         })
     return routes
 
@@ -458,12 +340,15 @@ def _summarise_frame(frame: dict) -> dict:
 
 async def _ai_write_page(component_name: str, route_path: str,
                           all_routes: list[dict], frame: dict,
-                          project_title: str) -> str:
+                          project_title: str,
+                          nav_block: str = "") -> str:
     from coding import client as gemini_client
 
-    route_summary  = [{"page": r["page_name"], "route": r["route_path"]} for r in all_routes]
-    cleaned_frame  = _summarise_frame(frame)
-    model = os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.0-flash")
+    route_summary = [{"page": r["page_name"], "route": r["route_path"]} for r in all_routes]
+    cleaned_frame = _summarise_frame(frame)
+    model         = os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.0-flash")
+
+    log.info("EXPORT", f"Writing component={component_name!r}  route={route_path!r}")
 
     prompt = (
         f"{REACT_SYSTEM_PROMPT}\n\n"
@@ -471,7 +356,8 @@ async def _ai_write_page(component_name: str, route_path: str,
         f"COMPONENT NAME: {component_name}\n"
         f"THIS PAGE ROUTE: {route_path}\n"
         f"ALL ROUTES: {json.dumps(route_summary)}\n\n"
-        f"FIGMA NODE TREE:\n"
+        + (f"{nav_block}\n\n" if nav_block else "")
+        + f"FIGMA NODE TREE:\n"
         f"{json.dumps(cleaned_frame, separators=(',', ':'))}"
     )
 
@@ -493,12 +379,15 @@ async def _ai_write_page(component_name: str, route_path: str,
         if "export default function" in raw and not raw.rstrip().endswith("}"):
             raw += "\n}\n"
 
+    log.success("EXPORT", f"Component={component_name!r} done ({len(raw)} chars)")
     return raw
 
 
 class ExportPage(BaseModel):
-    name: str
-    frame: dict
+    name:      str
+    frame:     dict
+    nav_hint:  Optional[str] = None   # @nav: destinations from frame name
+    desc_hint: Optional[str] = None   # @desc: layout instructions from frame name
 
 class ExportRequest(BaseModel):
     project_title: str = "My App"
@@ -510,45 +399,112 @@ async def export_react(request: ExportRequest):
     if not request.pages:
         raise HTTPException(status_code=400, detail="No pages provided")
 
-    print(f"\n[/export-react] '{request.project_title}' — {len(request.pages)} page(s)")
+    log.info("EXPORT", f"project={request.project_title!r}  pages={len(request.pages)}")
 
-    try:
-        pages  = [{"name": p.name, "frame": p.frame} for p in request.pages]
-        routes = _make_routes(pages)
-        files: dict[str, str] = {}
+    async def stream_export():
+        try:
+            pages  = [{"name": p.name, "frame": p.frame, "nav_hint": p.nav_hint, "desc_hint": p.desc_hint} for p in request.pages]
+            routes = _make_routes(pages)
+            files: dict[str, str] = {}
+            total  = len(pages)
 
-        for i, (page, route) in enumerate(zip(pages, routes)):
-            print(f"  [{i+1}/{len(pages)}] Writing {route['component_name']}...")
-            jsx = await _ai_write_page(
-                component_name=route["component_name"],
-                route_path=route["route_path"],
-                all_routes=routes,
-                frame=page["frame"],
-                project_title=request.project_title,
-            )
-            files[route["file_name"]] = jsx
-            print(f"  ✅ {route['file_name']} ({len(jsx)} chars)")
+            # ── Build nav context from frame name hints ───────────
+            nav_context = build_nav_context(pages, routes)
+            nav_pages   = [n for n, c in nav_context.items() if c.get("destinations")]
+            desc_pages  = [n for n, c in nav_context.items() if c.get("desc_hint")]
+            if nav_pages:
+                yield sse_log(log.success("NAV",
+                    f"@nav resolved for: {', '.join(nav_pages)}"
+                ))
+            else:
+                yield sse_log(log.info("NAV",
+                    "No @nav hints found — using frame-name routing only"
+                ))
+            if desc_pages:
+                yield sse_log(log.info("NAV",
+                    f"@desc instructions found for: {', '.join(desc_pages)}"
+                ))
 
-        files["App.jsx"]            = _gen_app(routes)
-        files["main.jsx"]           = _gen_main()
-        files["index.html"]         = _gen_index_html(request.project_title)
-        files["vite.config.js"]     = _gen_vite()
-        files["package.json"]       = _gen_package(request.project_title)
-        files["tailwind.config.js"] = _gen_tailwind()
-        files["postcss.config.js"]  = _gen_postcss()
-        files["index.css"]          = _gen_css()
+            yield sse_log(log.info("EXPORT",
+                f"Starting export — project={request.project_title!r}  pages={total}"
+            ))
+            yield sse("export_start", {
+                "project_title": request.project_title,
+                "total_pages":   total,
+            })
 
-        print(f"[/export-react] ✅ Done — {len(files)} files total")
-        return JSONResponse({
-            "success": True,
-            "project_title": request.project_title,
-            "files": files,
-            "file_count": len(files),
-        })
+            for i, (page, route) in enumerate(zip(pages, routes)):
+                n = i + 1
+                nav_block = build_nav_prompt_block(page["name"], nav_context)
+                if nav_block:
+                    yield sse_log(log.info("NAV",
+                        f"Injecting nav hints into {route['component_name']!r}"
+                    ))
 
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+                yield sse_log(log.info("EXPORT",
+                    f"[{n}/{total}] Writing component={route['component_name']!r}"
+                ))
+                yield sse("export_page_start", {
+                    "page_number":    n,
+                    "total_pages":    total,
+                    "component_name": route["component_name"],
+                    "page_name":      page["name"],
+                })
+
+                jsx = await _ai_write_page(
+                    component_name=route["component_name"],
+                    route_path=route["route_path"],
+                    all_routes=routes,
+                    frame=page["frame"],
+                    project_title=request.project_title,
+                    nav_block=nav_block,
+                )
+                files[route["file_name"]] = jsx
+
+                yield sse_log(log.success("EXPORT",
+                    f"[{n}/{total}] {route['file_name']} done ({len(jsx):,} chars)"
+                ))
+                yield sse("export_page_done", {
+                    "page_number":    n,
+                    "total_pages":    total,
+                    "component_name": route["component_name"],
+                    "file_name":      route["file_name"],
+                    "file_size":      len(jsx),
+                })
+
+            # Boilerplate files
+            yield sse_log(log.info("EXPORT", "Writing boilerplate files..."))
+            files["App.jsx"]            = _gen_app(routes)
+            files["main.jsx"]           = _gen_main()
+            files["index.html"]         = _gen_index_html(request.project_title)
+            files["vite.config.js"]     = _gen_vite()
+            files["package.json"]       = _gen_package(request.project_title)
+            files["tailwind.config.js"] = _gen_tailwind()
+            files["postcss.config.js"]  = _gen_postcss()
+            files["index.css"]          = _gen_css()
+
+            yield sse_log(log.success("EXPORT", f"Complete — {len(files)} files total"))
+            yield sse("export_complete", {
+                "success":       True,
+                "project_title": request.project_title,
+                "files":         files,
+                "file_count":    len(files),
+            })
+
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+            yield sse_log(log.error("EXPORT", f"Failed — {exc}"))
+            yield sse("export_error", {"message": str(exc)})
+
+    return StreamingResponse(
+        stream_export(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":     "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection":        "keep-alive",
+        },
+    )
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -556,7 +512,7 @@ async def export_react(request: ExportRequest):
 # ─────────────────────────────────────────────────────────────────
 
 def _gen_app(routes: list[dict]) -> str:
-    imports = "\n".join(
+    imports   = "\n".join(
         f'import {r["component_name"]} from "./{r["file_name"].replace(".jsx", "")}";'
         for r in routes
     )
@@ -643,7 +599,6 @@ def _gen_tailwind() -> str:
         "  theme: {\n"
         "    extend: {\n"
         '      fontFamily: { sans: ["Inter", "system-ui", "sans-serif"] },\n'
-        "      screens: { sm: '640px', md: '768px', lg: '1024px', xl: '1280px', '2xl': '1536px' },\n"
         "    },\n"
         "  },\n"
         "  plugins: [],\n"
@@ -686,7 +641,13 @@ def _gen_css() -> str:
 def sse(event_type: str, data: dict) -> str:
     line = json.dumps({"type": event_type, "payload": data})
     if len(line) > 16000:
-        print(f"[WARN] SSE event '{event_type}' is {len(line):,} chars — consider chunking")
+        log.warn("SSE", f"Event '{event_type}' is {len(line):,} chars — consider chunking")
+    return f"data: {line}\n\n"
+
+
+def sse_log(log_entry: dict) -> str:
+    """Wrap a log entry as an SSE 'log' event so the UI can display it."""
+    line = json.dumps({"type": "log", "payload": log_entry})
     return f"data: {line}\n\n"
 
 

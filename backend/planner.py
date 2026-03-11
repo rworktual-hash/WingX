@@ -3,6 +3,7 @@ import json
 import re
 from google import genai
 from dotenv import load_dotenv
+import logger as log
 
 load_dotenv()
 
@@ -67,17 +68,30 @@ def parse_plan(raw: str) -> dict:
 
     return {
         "project_title": data.get("project_title", "Untitled Project"),
-        "total_pages": data.get("total_pages", len(pages)),
-        "pages": pages,
+        "total_pages":   data.get("total_pages", len(pages)),
+        "pages":         pages,
     }
 
 async def run_planner(user_prompt: str) -> dict:
+    log.info("PLANNER", f"Starting — prompt: {user_prompt[:80]!r}")
+
     full_prompt = f"{PLANNER_SYSTEM_PROMPT}\n\nUser Request: {user_prompt}"
-    response = client.models.generate_content(model=planner_model, contents=full_prompt)
-    raw_text = response.text
-    print(f"[PLANNER RAW]:\n{raw_text[:400]}...\n")
+    response    = client.models.generate_content(model=planner_model, contents=full_prompt)
+    raw_text    = response.text
+
+    log.debug("PLANNER", f"Raw response: {len(raw_text)} chars")
+
     parsed = parse_plan(raw_text)
-    print(f"[PLANNER] '{parsed['project_title']}' → {parsed['total_pages']} pages")
+
+    log.success("PLANNER",
+        f"Plan ready — project={parsed['project_title']!r}  pages={parsed['total_pages']}",
+        extra={"total_pages": parsed["total_pages"]}
+    )
+
     for p in parsed["pages"]:
-        print(f"  → {p['name']} ({p['width']}x{p['height']}px) | {len(p['images'])} images")
+        log.info("PLANNER",
+            f"  → {p['name']}  ({p['width']}×{p['height']}px)  images={len(p['images'])}",
+            extra={"page_id": p["id"]}
+        )
+
     return parsed

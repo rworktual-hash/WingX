@@ -27,6 +27,8 @@ package.json
 README.md 
 ui.html
 tsconfig.json 
+.gitignore
+
 
 /__pycache__/
 __pycache__/

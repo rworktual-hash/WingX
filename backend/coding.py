@@ -4,6 +4,7 @@ import re
 from google import genai
 from dotenv import load_dotenv
 from themes import select_themes_for_prompt
+import logger as log
 
 load_dotenv()
 
@@ -16,7 +17,7 @@ IMAGE_PROXY_BASE = os.getenv(
 )
 
 # ─────────────────────────────────────────────────────────────────
-# SYSTEM PROMPT — generates the EXACT sample output format
+# SYSTEM PROMPT
 # ─────────────────────────────────────────────────────────────────
 CODING_SYSTEM_PROMPT = """
 You are an expert Figma UI designer. Generate a JSON array of design elements for ONE Figma page/frame.
@@ -139,7 +140,7 @@ DESIGN QUALITY REQUIREMENTS:
 
 def build_theme_block(theme: dict) -> str:
     colors = theme.get("colors", [])
-    roles = [
+    roles  = [
         "Primary Background  (page/frame bg)",
         "Secondary Background  (cards, panels, surfaces)",
         "Primary Accent  (buttons, links, highlights, icons)",
@@ -161,9 +162,9 @@ def build_theme_block(theme: dict) -> str:
 
 
 def build_image_url(keyword: str, width: int, height: int) -> str:
-    seed = abs(hash(keyword)) % 9999
+    seed       = abs(hash(keyword)) % 9999
     picsum_url = f"https://picsum.photos/seed/{seed}/{width}/{height}"
-    encoded = picsum_url.replace(":", "%3A").replace("/", "%2F")
+    encoded    = picsum_url.replace(":", "%3A").replace("/", "%2F")
     return f"{IMAGE_PROXY_BASE}?url={encoded}&width={width}&height={height}"
 
 
@@ -174,8 +175,8 @@ def inject_image_urls(children: list) -> list:
             continue
         if el.get("type") == "image" and el.get("src") == "PLACEHOLDER":
             keyword = el.get("imageKeyword", el.get("name", "photo"))
-            w = int(el.get("width", 400))
-            h = int(el.get("height", 300))
+            w       = int(el.get("width",  400))
+            h       = int(el.get("height", 300))
             el["src"] = build_image_url(keyword, w, h)
         if "children" in el and isinstance(el["children"], list):
             inject_image_urls(el["children"])
@@ -184,8 +185,8 @@ def inject_image_urls(children: list) -> list:
 
 def clean_json_response(raw: str) -> str:
     cleaned = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
-    start = cleaned.find('[')
-    end = cleaned.rfind(']')
+    start   = cleaned.find('[')
+    end     = cleaned.rfind(']')
     if start != -1 and end != -1:
         return cleaned[start:end + 1]
     return cleaned
@@ -204,29 +205,32 @@ def parse_coding_response(raw: str, page_name: str) -> list:
 
 async def generate_page_nodes(page: dict, project_title: str, user_prompt: str) -> dict:
     """
-    Generate ONE page that matches the sample format exactly.
+    Generate ONE page.
     Returns { page_id, page_name, theme, frame }
-    where frame = { type, name, width, height, backgroundColor, children[] }
     """
-    page_name  = page["name"]
-    page_width = page.get("width", 1440)
+    page_name   = page["name"]
+    page_width  = page.get("width",  1440)
     page_height = page.get("height", 3200)
-    page_desc  = page.get("description", page_name)
-    images     = page.get("images", [])
+    page_desc   = page.get("description", page_name)
+    images      = page.get("images", [])
 
-    # ── Select theme ──
-    themes = select_themes_for_prompt(user_prompt, max_themes=1)
+    log.info("CODING", f"Generating page={page_name!r}  size={page_width}×{page_height}")
+
+    # ── Select theme ──────────────────────────────────────────────
+    themes         = select_themes_for_prompt(user_prompt, max_themes=1)
     selected_theme = themes[0] if themes else {
-        "name": "Dark Pro",
-        "category": "dark",
-        "colors": ["#111111", "#1A1A1A", "#4F46E5", "#818CF8", "#FFFFFF"],
-        "animation": "fade",
+        "name":        "Dark Pro",
+        "category":    "dark",
+        "colors":      ["#111111", "#1A1A1A", "#4F46E5", "#818CF8", "#FFFFFF"],
+        "animation":   "fade",
         "description": "Dark background with indigo accent",
     }
     theme_block = build_theme_block(selected_theme)
     bg_color    = selected_theme["colors"][0]
 
-    # ── Format image specs ──
+    log.info("CODING", f"Theme selected: {selected_theme['name']!r}")
+
+    # ── Format image specs ────────────────────────────────────────
     images_section = ""
     if images:
         images_section = "\nIMAGE PLACEHOLDERS — create one 'image' element for each:\n"
@@ -268,28 +272,30 @@ REMINDER:
 Generate the children array now. Output ONLY the JSON array.
 """
 
-    print(f"\n[CODING] '{page_name}' | theme: {selected_theme['name']}")
-
+    log.info("CODING", f"Calling Gemini for page={page_name!r}")
     response = client.models.generate_content(
         model=planner_model,
         contents=full_prompt
     )
-
     raw = response.text
-    print(f"[CODING] {len(raw)} chars received")
+    log.debug("CODING", f"Raw response: {len(raw)} chars for page={page_name!r}")
 
     children = parse_coding_response(raw, page_name)
     children = inject_image_urls(children)
 
-    print(f"[CODING] ✅ '{page_name}': {count_elements(children)} elements")
+    elem_count = count_elements(children)
+    log.success("CODING",
+        f"Page={page_name!r} done — {elem_count} elements",
+        extra={"page_id": page["id"], "elements": elem_count}
+    )
 
     frame = {
-        "type": "frame",
-        "name": page_name,
-        "width": page_width,
-        "height": page_height,
+        "type":            "frame",
+        "name":            page_name,
+        "width":           page_width,
+        "height":          page_height,
         "backgroundColor": bg_color,
-        "children": children,
+        "children":        children,
     }
 
     return {
