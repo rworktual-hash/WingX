@@ -1,37 +1,28 @@
 """
-exporter.py  —  Figma JSON -> React/Vite code
+exporter.py  —  Figma JSON → React/Vite code
 
-DEFINITIVE FIX NOTES:
-─────────────────────
-PROBLEM 1 — Invisible variant states rendering:
-  ROOT CAUSE was in code.js extractNode() — it was NOT checking node.visible
-  before recursing into children. Inactive variant states (visible=false in Figma)
-  were being exported as if visible. Fixed in code.js by checking kid.visible===false
-  and skipping those children at extraction time.
+Supports the Universal Component Type System:
+  - Pages    → pages/<Name>.jsx        (React Router routes)
+  - Overlays → components/<Name>.jsx   (modal, drawer, popover, toast, etc.)
+  - Inline   → components/<Name>.jsx   (tabs, table, form, sidebar, etc.)
+  - Tabs     → rendered inside their parent component, not standalone
 
-  In exporter.py we also skip nodes with visible:false, opacity:0, or empty text
-  as a second layer of defence.
-
-PROBLEM 2 — Nav links not working:
-  Nav links must fire on ANY node whose name or text matches a button_routes entry,
-  not just nodes with type="button". Figma components representing nav items are
-  often type="frame" or "instance". We wire navigate() on containers too when
-  their name matches a @nav: button mapping.
-
-PROBLEM 3 — _dedupe_variants was too aggressive:
-  The 4px-bucket deduplication was accidentally collapsing legitimate sibling
-  elements (e.g. sidebar items at similar y-coords). REMOVED. The fix belongs
-  in code.js (visible flag), not the exporter.
-
-PROBLEM 4 — Alignment:
-  All containers already use position:absolute with exact x/y from Figma.
-  The real cause of misalignment was invisible ghost nodes shifting layout.
-  With code.js now filtering them at source, alignment should match Figma exactly.
+Fix notes:
+  PROBLEM 1 — Invisible variant states: fixed in code.js (visible=false check)
+  PROBLEM 2 — Nav links: wired on containers whose name matches @nav: button_routes
+  PROBLEM 3 — dedup removed (was too aggressive)
+  PROBLEM 4 — Alignment: absolute x/y from Figma, scale via useEffect
+  PROBLEM 5 — Colour: never apply a default backgroundColor when fill is absent/transparent
+  PROBLEM 6 — Asset images: rendered as <img src="/assets/images/name.png" />
 """
 
 import re
 from typing import Optional
 from nav_extractor import build_nav_context, get_button_route
+from component_classifier import (
+    classify, is_overlay, is_inline, is_page, is_tab,
+    get_render_strategy, OVERLAY_TYPES, INLINE_TYPES,
+)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -41,44 +32,48 @@ from nav_extractor import build_nav_context, get_button_route
 def export_to_react(pages: list[dict], project_title: str = "My App") -> dict[str, str]:
     files: dict[str, str] = {}
 
-    app_name    = _to_pascal(project_title) or "MyApp"
     app_display = project_title.strip() or "My App"
 
-    routes = []
-    seen_slugs: set[str] = set()
-    for i, page in enumerate(pages):
-        raw_name       = page.get("name", f"Page{i+1}")
-        component_name = _to_safe_component(raw_name, i)
-        slug           = _to_safe_slug(raw_name, i, seen_slugs)
-        seen_slugs.add(slug)
-        route_path = "/" if i == 0 else f"/{slug}"
-        routes.append({
-            "page_name":      raw_name,
-            "component_name": component_name,
-            "route_path":     route_path,
-            "slug_path":      f"/{slug}",
-            "file_name":      f"pages/{component_name}.jsx",
-        })
+    # ── Classify all frames ───────────────────────────────────────
+    classified  = classify(pages)
+    page_frames = classified["pages"]
+    comp_frames = classified["components"]
+    routes      = classified["routes"]
+    comp_map    = classified["component_map"]
 
-    nav_context = build_nav_context(pages, routes)
+    # ── Build nav context (only from page frames) ─────────────────
+    nav_context = build_nav_context(page_frames, routes)
 
-    for i, page in enumerate(pages):
-        route = routes[i]
-        frame = page.get("frame", page)
+    # ── Generate page files ───────────────────────────────────────
+    for page in page_frames:
         jsx = _generate_page_component(
-            frame          = frame,
-            component_name = route["component_name"],
+            frame          = page["frame"],
+            component_name = page["component_name"],
             all_routes     = routes,
             nav_context    = nav_context,
-            page_name      = route["page_name"],
+            page_name      = page["name"],
+            comp_map       = comp_map,
         )
-        files[route["file_name"]] = jsx
+        files[page["file_name"]] = jsx
 
+    # ── Generate component files ──────────────────────────────────
+    for comp in comp_frames:
+        strategy = get_render_strategy(comp["comp_type"])
+        jsx = _generate_component(
+            comp       = comp,
+            strategy   = strategy,
+            all_routes = routes,
+            nav_context= nav_context,
+            comp_map   = comp_map,
+        )
+        files[comp["file_name"]] = jsx
+
+    # ── Boilerplate files ─────────────────────────────────────────
     files["App.jsx"]            = _generate_app(routes)
     files["main.jsx"]           = _generate_main()
     files["index.html"]         = _generate_index_html(app_display)
     files["vite.config.js"]     = _generate_vite_config()
-    files["package.json"]       = _generate_package_json(_to_safe_slug(app_name, 0, set()))
+    files["package.json"]       = _generate_package_json(_to_safe_slug(app_display, 0, set()))
     files["tailwind.config.js"] = _generate_tailwind_config()
     files["postcss.config.js"]  = _generate_postcss_config()
     files["index.css"]          = _generate_index_css()
@@ -88,56 +83,30 @@ def export_to_react(pages: list[dict], project_title: str = "My App") -> dict[st
 
 # ─────────────────────────────────────────────────────────────────
 # VISIBILITY CHECK
-# Skip nodes that are invisible in Figma.
-# Note: code.js now also filters visible=false at extraction time,
-# but we keep this as a safety net for older exports.
 # ─────────────────────────────────────────────────────────────────
 
 def _is_visible(node: dict) -> bool:
-    """Return False if node should be completely skipped."""
-    if node.get("visible") is False:
-        return False
-    if node.get("opacity", 1) == 0:
-        return False
-    # Zero-size ghost nodes
-    if node.get("width", 1) == 0 and node.get("height", 1) == 0:
-        return False
-    # Empty text nodes
+    if node.get("visible") is False:                     return False
+    if node.get("opacity", 1) == 0:                      return False
+    if node.get("width", 1) == 0 and node.get("height", 1) == 0: return False
     if node.get("type", "").lower() == "text":
-        if not (node.get("text") or "").strip():
-            return False
+        if not (node.get("text") or "").strip():         return False
     return True
 
 
 # ─────────────────────────────────────────────────────────────────
 # NAV RESOLUTION
-# Works on BOTH button nodes AND containers/frames whose name
-# matches a @nav: button mapping. This handles the common Figma
-# pattern where nav items are component instances, not raw buttons.
 # ─────────────────────────────────────────────────────────────────
 
 def _resolve_nav(
-    node_name: str,
-    node_text: str,
-    page_name: str,
-    nav_context: dict,
-    all_routes: list[dict],
+    node_name: str, node_text: str, page_name: str,
+    nav_context: dict, all_routes: list[dict],
 ) -> Optional[str]:
-    """
-    Try to find a navigate() target for any node.
-    Checks both node_text and node_name against @nav: button_routes.
-    Returns route path or None.
-    """
-    # 1. Direct lookup by text
     route = get_button_route(node_text, page_name, nav_context)
-    if route:
-        return route
-    # 2. Direct lookup by name
+    if route: return route
     route = get_button_route(node_name, page_name, nav_context)
-    if route:
-        return route
+    if route: return route
 
-    # 3. Check destinations list (legacy @nav: page-list format)
     ctx          = nav_context.get(page_name, {})
     destinations = ctx.get("destinations", [])
     text_lower   = node_text.strip().lower()
@@ -148,8 +117,7 @@ def _resolve_nav(
         target_words = set(w for w in re.split(r"[\s\-_]+", dest_lower) if len(w) > 2)
         text_words   = set(w for w in re.split(r"[\s\-_]+", text_lower) if len(w) > 2)
         name_words   = set(w for w in re.split(r"[\s\-_]+", name_lower) if len(w) > 2)
-        if (text_lower == dest_lower
-                or name_lower == dest_lower
+        if (text_lower == dest_lower or name_lower == dest_lower
                 or (target_words and target_words & text_words)
                 or (target_words and target_words & name_words)):
             return dest["route_path"]
@@ -158,36 +126,44 @@ def _resolve_nav(
 
 
 # ─────────────────────────────────────────────────────────────────
-# PAGE COMPONENT  —  locked-ratio scale
-#
-# ratio = viewport_width / FRAME_W
-# The entire frame scales uniformly. Height scales proportionally.
-# Aspect ratio is mathematically locked — same as Figma preview.
+# PAGE COMPONENT GENERATOR
 # ─────────────────────────────────────────────────────────────────
 
 def _generate_page_component(
-    frame: dict,
-    component_name: str,
-    all_routes: list[dict],
-    nav_context: dict,
-    page_name: str,
+    frame: dict, component_name: str,
+    all_routes: list[dict], nav_context: dict,
+    page_name: str, comp_map: dict,
 ) -> str:
     bg_color     = frame.get("backgroundColor", "#ffffff")
     children     = frame.get("children", [])
     frame_width  = int(frame.get("width",  1440))
     frame_height = int(frame.get("height", 900))
-    scale_id     = f"frame-{component_name.lower()}"
 
     visible_children = [c for c in children if isinstance(c, dict) and _is_visible(c)]
 
+    # Collect which components are referenced in this page
+    used_components: set[str] = set()
+
     child_lines = []
     for child in visible_children:
-        jsx = _render_node(child, all_routes, nav_context, page_name, depth=4)
+        jsx = _render_node(child, all_routes, nav_context, page_name,
+                           depth=4, comp_map=comp_map,
+                           used_components=used_components, scale="1")
         if jsx:
             child_lines.append(jsx)
 
     children_jsx = "\n".join(child_lines)
     needs_link   = "<Link" in children_jsx
+
+    # ── Bug 3 fix: collect all minimize state keys from rendered JSX ──
+    # _render_container emits setMinimizedXxx(…) — extract every unique key
+    minimize_keys = sorted(set(re.findall(r"setMinimized(\w+)\(", children_jsx)))
+
+    # Build component imports
+    comp_imports = "\n".join(
+        f'import {cn} from "../components/{cn}";'
+        for cn in sorted(used_components)
+    )
 
     import_line = (
         'import { Link, useNavigate } from "react-router-dom";'
@@ -195,24 +171,43 @@ def _generate_page_component(
         'import { useNavigate } from "react-router-dom";'
     )
 
+    scale_id = f"__page_frame_{component_name.lower()}__"
+
     L = []
-    L.append('import React, { useEffect } from "react";')
+    L.append('import React, { useEffect, useState } from "react";')
     L.append(import_line)
+    if comp_imports:
+        L.append(comp_imports)
     L.append("")
     L.append(f"export default function {component_name}() {{")
     L.append("  const navigate = useNavigate();")
+    L.append("")
+    # State for toggling overlay components
+    for cn in sorted(used_components):
+        state_var = _to_camel(cn) + "Open"
+        L.append(f"  const [{state_var}, set{cn}Open] = useState(false);")
+    # State for minimize toggles
+    for key in minimize_keys:
+        L.append(f"  const [minimized{key}, setMinimized{key}] = useState(false);")
+    L.append("")
     L.append(f"  const FRAME_W = {frame_width};")
     L.append(f"  const FRAME_H = {frame_height};")
     L.append("")
     L.append("  useEffect(() => {")
     L.append("    function applyScale() {")
-    L.append(f'      const frame = document.getElementById("{scale_id}");')
-    L.append("      if (!frame) return;")
-    L.append("      const ratio = window.innerWidth / FRAME_W;")
-    L.append("      frame.style.transform = `scale(${ratio})`;")
-    L.append('      frame.style.transformOrigin = "top left";')
-    L.append("      const wrapper = frame.parentElement;")
-    L.append("      if (wrapper) wrapper.style.height = Math.round(FRAME_H * ratio) + 'px';")
+    L.append(f'      const inner = document.getElementById("{scale_id}");')
+    L.append("      if (!inner) return;")
+    L.append("      const s = window.innerWidth / FRAME_W;")
+    L.append("      const scale = s;")
+    L.append("      const scaledW = Math.round(FRAME_W * scale);")
+    L.append("      const scaledH = Math.round(FRAME_H * scale);")  
+    L.append("      inner.style.transform = 'scale(' + scale + ')';")
+    L.append("      inner.style.transformOrigin = 'top left';")
+    L.append("      if (inner.parentElement) {")
+    L.append("        inner.parentElement.style.height = scaledH + 'px';")
+    L.append("        inner.parentElement.style.width = scaledW + 'px';")
+    L.append("        inner.parentElement.style.overflow= 'hidden';")
+    L.append("      }")
     L.append("    }")
     L.append("    applyScale();")
     L.append('    window.addEventListener("resize", applyScale);')
@@ -220,13 +215,19 @@ def _generate_page_component(
     L.append("  }, []);")
     L.append("")
     L.append("  return (")
-    L.append(f'    <div style={{{{ width: "100vw", overflow: "hidden", position: "relative", backgroundColor: "{bg_color}" }}}}>') 
+    L.append(f'    <div style={{{{ width: \"100%\", minHeight: \"100vh\", overflowX: \"hidden\", backgroundColor: \"{bg_color}\" }}}}>')    
     L.append(f'      <div id="{scale_id}" style={{{{')
-    L.append(f'        position: "absolute", top: 0, left: 0,')
-    L.append(f'        width: "{frame_width}px", height: "{frame_height}px",')
-    L.append(f'        backgroundColor: "{bg_color}", overflow: "hidden",')
+    L.append(f'        position: "relative",')
+    L.append(f'        width: "{frame_width}px",')
+    L.append(f'        height: "{frame_height}px",')
+    L.append(f'        backgroundColor: "{bg_color}",')
+    L.append(f'        overflow: "hidden",')
     L.append(f'      }}}}>') 
     L.append(children_jsx)
+    # Render overlay components at end of page
+    for cn in sorted(used_components):
+        state_var = _to_camel(cn) + "Open"
+        L.append(f'        {{{state_var} && <{cn} onClose={{() => set{cn}Open(false)}} />}}')
     L.append("      </div>")
     L.append("    </div>")
     L.append("  );")
@@ -236,38 +237,426 @@ def _generate_page_component(
 
 
 # ─────────────────────────────────────────────────────────────────
+# COMPONENT FILE GENERATOR
+# Dispatches to the correct renderer based on strategy
+# ─────────────────────────────────────────────────────────────────
+
+def _generate_component(
+    comp: dict, strategy: str,
+    all_routes: list[dict], nav_context: dict, comp_map: dict,
+) -> str:
+    if strategy.startswith("overlay_"):
+        return _generate_overlay_component(comp, strategy, all_routes, nav_context, comp_map)
+    if strategy == "inline_tabs":
+        return _generate_tabs_component(comp, all_routes, nav_context, comp_map)
+    if strategy == "inline_table":
+        return _generate_table_component(comp, all_routes, nav_context, comp_map)
+    if strategy == "inline_form":
+        return _generate_form_component(comp, all_routes, nav_context, comp_map)
+    # Default inline block
+    return _generate_inline_component(comp, all_routes, nav_context, comp_map)
+
+
+# ── OVERLAY COMPONENT (modal, drawer, popover, toast, etc.) ──────
+
+def _generate_overlay_component(
+    comp: dict, strategy: str,
+    all_routes: list[dict], nav_context: dict, comp_map: dict,
+) -> str:
+    cn           = comp["component_name"]
+    frame        = comp.get("frame", {})
+    bg           = frame.get("backgroundColor", "#ffffff")
+    w            = comp.get("width",  480)
+    h            = comp.get("height", 320)
+    comp_type    = comp["comp_type"]
+    tabs         = comp.get("tabs", [])
+    default_tab  = comp.get("default_tab", tabs[0]["name"] if tabs else None)
+
+    visible_children = [c for c in frame.get("children", [])
+                        if isinstance(c, dict) and _is_visible(c)]
+    used_components: set[str] = set()
+
+    child_lines = []
+    for child in visible_children:
+        jsx = _render_node(child, all_routes, nav_context, comp["name"],
+                           depth=6, comp_map=comp_map,
+                           used_components=used_components, scale="1")
+        if jsx:
+            child_lines.append(jsx)
+
+    children_jsx = "\n".join(child_lines)
+
+    # Position strategy per overlay type
+    if comp_type == "drawer":
+        overlay_style = (
+            'position: "fixed", top: 0, right: 0, '
+            f'width: "{w}px", height: "100vh", '
+            f'backgroundColor: "{bg}", zIndex: 1000, '
+            'boxShadow: "-8px 0 32px rgba(0,0,0,0.3)", '
+            'overflowY: "auto"'
+        )
+        backdrop_style = (
+            'position: "fixed", inset: 0, '
+            'backgroundColor: "rgba(0,0,0,0.5)", zIndex: 999'
+        )
+    elif comp_type in ("toast",):
+        overlay_style = (
+            'position: "fixed", bottom: "24px", right: "24px", '
+            f'width: "{w}px", '
+            f'backgroundColor: "{bg}", zIndex: 1000, '
+            'borderRadius: "12px", '
+            'boxShadow: "0 8px 32px rgba(0,0,0,0.2)"'
+        )
+        backdrop_style = None
+    elif comp_type in ("popover", "tooltip"):
+        overlay_style = (
+            'position: "absolute", top: "100%", left: 0, '
+            f'width: "{w}px", '
+            f'backgroundColor: "{bg}", zIndex: 500, '
+            'borderRadius: "8px", '
+            'boxShadow: "0 4px 16px rgba(0,0,0,0.15)"'
+        )
+        backdrop_style = None
+    else:
+        # modal / dialog / bottomsheet
+        overlay_style = (
+            'position: "relative", margin: "auto", '
+            f'width: "{w}px", maxWidth: "90vw", '
+            f'backgroundColor: "{bg}", zIndex: 1001, '
+            'borderRadius: "16px", overflow: "hidden", '
+            'boxShadow: "0 24px 64px rgba(0,0,0,0.4)"'
+        )
+        backdrop_style = (
+            'position: "fixed", inset: 0, '
+            'backgroundColor: "rgba(0,0,0,0.6)", zIndex: 1000, '
+            'display: "flex", alignItems: "center", justifyContent: "center"'
+        )
+
+    # Build tabs section if this overlay has tabs
+    tabs_jsx = ""
+    if tabs:
+        tabs_jsx = _render_tabs_section(tabs, default_tab, depth=6)
+
+    L = []
+    L.append('import React, { useState } from "react";')
+    L.append('import { useNavigate } from "react-router-dom";')
+    L.append("")
+    L.append(f"export default function {cn}({{ onClose }}) {{")
+    L.append("  const navigate = useNavigate();")
+    if tabs:
+        first_tab = default_tab or (tabs[0]["name"] if tabs else "")
+        L.append(f'  const [activeTab, setActiveTab] = useState("{first_tab}");')
+    L.append("")
+    L.append("  return (")
+
+    if backdrop_style:
+        L.append(f'    <div style={{{{ {backdrop_style} }}}} onClick={{onClose}}>')
+        L.append(f'      <div style={{{{ {overlay_style} }}}} onClick={{e => e.stopPropagation()}}>')
+        if tabs_jsx:
+            L.append(tabs_jsx)
+        L.append(f'        <div style={{{{ position: "relative", width: "{w}px", height: "{h}px" }}}}>') 
+        L.append(children_jsx)
+        L.append("        </div>")
+        L.append("      </div>")
+        L.append("    </div>")
+    else:
+        L.append(f'    <div style={{{{ {overlay_style} }}}}>') 
+        if tabs_jsx:
+            L.append(tabs_jsx)
+        L.append(children_jsx)
+        L.append("    </div>")
+
+    L.append("  );")
+    L.append("}")
+    L.append("")
+    return "\n".join(L)
+
+
+# ── TABS COMPONENT ───────────────────────────────────────────────
+
+def _generate_tabs_component(
+    comp: dict,
+    all_routes: list[dict], nav_context: dict, comp_map: dict,
+) -> str:
+    cn          = comp["component_name"]
+    frame       = comp.get("frame", {})
+    bg          = frame.get("backgroundColor", "#ffffff")
+    w           = comp.get("width",  600)
+    h           = comp.get("height", 400)
+    tabs        = comp.get("tabs", [])
+    default_tab = comp.get("default_tab", tabs[0]["name"] if tabs else "Tab 1")
+
+    visible_children = [c for c in frame.get("children", [])
+                        if isinstance(c, dict) and _is_visible(c)]
+    used_components: set[str] = set()
+
+    child_lines = []
+    for child in visible_children:
+        jsx = _render_node(child, all_routes, nav_context, comp["name"],
+                           depth=4, comp_map=comp_map,
+                           used_components=used_components, scale="1")
+        if jsx:
+            child_lines.append(jsx)
+
+    tabs_jsx = _render_tabs_section(tabs, default_tab, depth=4) if tabs else ""
+
+    L = []
+    L.append('import React, { useState } from "react";')
+    L.append("")
+    L.append(f"export default function {cn}() {{")
+    first_tab = default_tab or (tabs[0]["name"] if tabs else "")
+    L.append(f'  const [activeTab, setActiveTab] = useState("{first_tab}");')
+    L.append("")
+    L.append("  return (")
+    L.append(f'    <div style={{{{ position: "relative", width: "{w}px", height: "{h}px", backgroundColor: "{bg}" }}}}>')
+    if tabs_jsx:
+        L.append(tabs_jsx)
+    L.append("\n".join(child_lines))
+    L.append("    </div>")
+    L.append("  );")
+    L.append("}")
+    L.append("")
+    return "\n".join(L)
+
+
+# ── TABLE COMPONENT ──────────────────────────────────────────────
+
+def _generate_table_component(
+    comp: dict,
+    all_routes: list[dict], nav_context: dict, comp_map: dict,
+) -> str:
+    cn    = comp["component_name"]
+    frame = comp.get("frame", {})
+    bg    = frame.get("backgroundColor", "#ffffff")
+    w     = comp.get("width",  800)
+    h     = comp.get("height", 400)
+
+    visible_children = [c for c in frame.get("children", [])
+                        if isinstance(c, dict) and _is_visible(c)]
+    used_components: set[str] = set()
+    child_lines = []
+    for child in visible_children:
+        jsx = _render_node(child, all_routes, nav_context, comp["name"],
+                           depth=4, comp_map=comp_map,
+                           used_components=used_components, scale="1")
+        if jsx:
+            child_lines.append(jsx)
+
+    L = []
+    L.append('import React, { useState } from "react";')
+    L.append("")
+    L.append(f"export default function {cn}() {{")
+    L.append('  const [sortCol, setSortCol] = useState(null);')
+    L.append('  const [sortDir, setSortDir] = useState("asc");')
+    L.append("")
+    L.append("  return (")
+    L.append(f'    <div style={{{{ position: "relative", width: "{w}px", minHeight: "{h}px", backgroundColor: "{bg}", overflowX: "auto" }}}}>')
+    L.append("\n".join(child_lines))
+    L.append("    </div>")
+    L.append("  );")
+    L.append("}")
+    L.append("")
+    return "\n".join(L)
+
+
+# ── FORM COMPONENT ───────────────────────────────────────────────
+
+def _generate_form_component(
+    comp: dict,
+    all_routes: list[dict], nav_context: dict, comp_map: dict,
+) -> str:
+    cn    = comp["component_name"]
+    frame = comp.get("frame", {})
+    bg    = frame.get("backgroundColor", "#ffffff")
+    w     = comp.get("width",  480)
+    h     = comp.get("height", 400)
+
+    visible_children = [c for c in frame.get("children", [])
+                        if isinstance(c, dict) and _is_visible(c)]
+    used_components: set[str] = set()
+    child_lines = []
+    for child in visible_children:
+        jsx = _render_node(child, all_routes, nav_context, comp["name"],
+                           depth=4, comp_map=comp_map,
+                           used_components=used_components, scale="1")
+        if jsx:
+            child_lines.append(jsx)
+
+    L = []
+    L.append('import React, { useState } from "react";')
+    L.append('import { useNavigate } from "react-router-dom";')
+    L.append("")
+    L.append(f"export default function {cn}({{ onSubmit, onCancel }}) {{")
+    L.append("  const navigate = useNavigate();")
+    L.append('  const [formData, setFormData] = useState({});')
+    L.append("")
+    L.append("  const handleChange = (field, value) => {")
+    L.append("    setFormData(prev => ({ ...prev, [field]: value }));")
+    L.append("  };")
+    L.append("")
+    L.append("  const handleSubmit = () => {")
+    L.append("    if (onSubmit) onSubmit(formData);")
+    L.append("  };")
+    L.append("")
+    L.append("  return (")
+    L.append(f'    <div style={{{{ position: "relative", width: "{w}px", minHeight: "{h}px", backgroundColor: "{bg}" }}}}>')
+    L.append("\n".join(child_lines))
+    L.append("    </div>")
+    L.append("  );")
+    L.append("}")
+    L.append("")
+    return "\n".join(L)
+
+
+# ── GENERIC INLINE COMPONENT ─────────────────────────────────────
+
+def _generate_inline_component(
+    comp: dict,
+    all_routes: list[dict], nav_context: dict, comp_map: dict,
+) -> str:
+    cn    = comp["component_name"]
+    frame = comp.get("frame", {})
+    bg    = frame.get("backgroundColor", "")
+    w     = comp.get("width",  400)
+    h     = comp.get("height", 200)
+
+    visible_children = [c for c in frame.get("children", [])
+                        if isinstance(c, dict) and _is_visible(c)]
+    used_components: set[str] = set()
+    child_lines = []
+    for child in visible_children:
+        jsx = _render_node(child, all_routes, nav_context, comp["name"],
+                           depth=4, comp_map=comp_map,
+                           used_components=used_components, scale="1")
+        if jsx:
+            child_lines.append(jsx)
+
+    children_jsx = "\n".join(child_lines)
+    needs_link   = "<Link" in children_jsx
+    import_line  = (
+        'import { Link, useNavigate } from "react-router-dom";'
+        if needs_link else
+        'import { useNavigate } from "react-router-dom";'
+    )
+
+    bg_style = f'backgroundColor: "{bg}", ' if bg and bg not in ("transparent", "") else ""
+
+    L = []
+    L.append('import React from "react";')
+    L.append(import_line)
+    L.append("")
+    L.append(f"export default function {cn}({{ onClose, ...props }}) {{")
+    L.append("  const navigate = useNavigate();")
+    L.append("")
+    L.append("  return (")
+    L.append(f'    <div style={{{{ position: "relative", width: "{w}px", height: "{h}px", {bg_style}overflow: "hidden" }}}}>')
+    L.append(children_jsx)
+    L.append("    </div>")
+    L.append("  );")
+    L.append("}")
+    L.append("")
+    return "\n".join(L)
+
+
+# ─────────────────────────────────────────────────────────────────
+# TABS SECTION RENDERER
+# Generates the tab bar + conditional content panels
+# ─────────────────────────────────────────────────────────────────
+
+def _render_tabs_section(tabs: list[dict], default_tab: Optional[str], depth: int) -> str:
+    ind  = "  " * depth
+    ind2 = "  " * (depth + 1)
+    ind3 = "  " * (depth + 2)
+
+    if not tabs:
+        return ""
+
+    tab_names = [t["name"] for t in tabs]
+
+    lines = []
+    lines.append(f"{ind}{{/* Tab Bar */}}")
+    lines.append(f"{ind}<div style={{{{ display: 'flex', borderBottom: '1px solid #e5e7eb' }}}}>")
+    for tab in tabs:
+        tn = tab["name"]
+        lines.append(f"{ind2}<button")
+        lines.append(f"{ind3}key=\"{tn}\"")
+        lines.append(f"{ind3}onClick={{() => setActiveTab(\"{tn}\")}}")
+        lines.append(f"{ind3}style={{{{")
+        lines.append(f"{ind3}  padding: '10px 20px', border: 'none', cursor: 'pointer',")
+        lines.append(f"{ind3}  background: 'none',")
+        lines.append(f"{ind3}  borderBottom: activeTab === \"{tn}\" ? '2px solid #6366F1' : '2px solid transparent',")
+        lines.append(f"{ind3}  color: activeTab === \"{tn}\" ? '#6366F1' : '#6b7280',")
+        lines.append(f"{ind3}  fontWeight: activeTab === \"{tn}\" ? '600' : '400',")
+        lines.append(f"{ind3}}}}}>{tn}</button>")
+    lines.append(f"{ind}</div>")
+
+    # Tab content panels
+    lines.append(f"{ind}{{/* Tab Content */}}")
+    for tab in tabs:
+        tn        = tab["name"]
+        tab_frame = tab.get("frame") or {}
+        tab_bg    = (tab_frame.get("frame") or {}).get("backgroundColor", "")
+        lines.append(f"{ind}{{activeTab === \"{tn}\" && (")
+        lines.append(f"{ind2}<div style={{{{ position: 'relative' }}}}>")
+        lines.append(f"{ind3}{{/* {tn} content */}}")
+        lines.append(f"{ind2}</div>")
+        lines.append(f"{ind})}}")
+
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────
 # NODE DISPATCHER
 # ─────────────────────────────────────────────────────────────────
 
 def _render_node(
     node: dict,
-    all_routes: list[dict],
-    nav_context: dict,
-    page_name: str,
-    depth: int = 4,
+    all_routes: list[dict], nav_context: dict,
+    page_name: str, depth: int = 4,
+    comp_map: dict = None,
+    used_components: set = None,
+    scale: str = "scale",
 ) -> str:
-    if not isinstance(node, dict):
-        return ""
-    if not _is_visible(node):
-        return ""
+    if not isinstance(node, dict): return ""
+    if not _is_visible(node):      return ""
+
+    comp_map        = comp_map or {}
+    used_components = used_components if used_components is not None else set()
 
     node_type = node.get("type", "").lower()
     indent    = "  " * depth
 
+    # ── Asset image node ─────────────────────────────────────────
+    if node_type == "asset_image":
+        return _render_asset_image(node, indent, scale)
+
     if node_type == "rectangle":
-        return _render_rectangle(node, indent)
+        return _render_rectangle(node, indent, scale)
     if node_type == "text":
-        return _render_text(node, indent)
+        return _render_text(node, indent, scale)
     if node_type == "image":
-        return _render_image(node, indent)
+        return _render_image(node, indent, scale)
     if node_type == "button":
-        return _render_button(node, indent, all_routes, nav_context, page_name)
+        return _render_button(node, indent, all_routes, nav_context, page_name, scale)
     if node_type == "line":
-        return _render_line(node, indent)
+        return _render_line(node, indent, scale)
     if node_type in ("ellipse", "vector"):
-        return _render_vector(node, indent)
+        return _render_vector(node, indent, scale)
+    if node_type == "scroller" or node.get("comp_type") == "scroller":
+        x = node.get("x", 0); y = node.get("y", 0)
+        w = node.get("width", 200); h = node.get("height", 20)
+        return (
+            f'{indent}<input type="range" style={{{{ '
+            f'position: "absolute", '
+            f'left: `calc({x}px * ${{{scale}}})`, '
+            f'top: `calc({y}px * ${{{scale}}})`, '
+            f'width: `calc({w}px * ${{{scale}}})`, '
+            f'height: `calc({h}px * ${{{scale}}})`, '
+            f'accentColor: "#6366F1" }}}} />'
+        )
     if node_type in ("group", "frame", "component", "instance") or node.get("children"):
-        return _render_container(node, all_routes, nav_context, page_name, indent, depth)
+        return _render_container(node, all_routes, nav_context, page_name,
+                                 indent, depth, comp_map, used_components, scale)
     return ""
 
 
@@ -275,68 +664,126 @@ def _render_node(
 # LEAF RENDERERS
 # ─────────────────────────────────────────────────────────────────
 
-def _render_rectangle(node: dict, indent: str) -> str:
+def _render_asset_image(node: dict, indent: str, scale: str = "scale") -> str:
+    """Render an @svg or @image node as <img> — screenshot from Figma, stored in public/assets/images/"""
+    x    = node.get("x", 0);  y = node.get("y", 0)
+    w    = node.get("width", 100);  h = node.get("height", 100)
+
+    # ── Bug 2 fix: strip Figma auto-ID suffix from label ─────────
+    # code.js may produce assetLabel = "logo/frame-19923" or "logo"
+    # We only want the part BEFORE the first "/" — that is the canonical label.
+    raw_label = node.get("assetLabel", node.get("name", "asset"))
+    label     = raw_label.split("/")[0].strip()          # "logo/frame-19923" → "logo"
+    if not label:
+        label = "asset"
+    # Normalise to kebab-case for a clean filename
+    label_slug = re.sub(r"[^\w\-]", "-", label.lower()).strip("-") or "asset"
+    file       = label_slug + ".png"
+
+    alt  = _safe_str(label)
+    name = _safe_comment(node.get("name", "asset"))
+    # /assets/images/ maps to public/assets/images/ in Vite (static public folder)
+    # width/height use calc(Xpx * scale) for proportional responsive sizing
+    return (
+        f'{indent}{{/* {name} */}}\n'
+        f'{indent}<img\n'
+        f'{indent}  src="/assets/images/{file}"\n'
+        f'{indent}  alt="{alt}"\n'
+        f'{indent}  style={{{{\n'
+        f'{indent}    position: "absolute",\n'
+        f'{indent}    left: `calc({x}px * ${{{scale}}})`,\n'
+        f'{indent}    top: `calc({y}px * ${{{scale}}})`,\n'
+        f'{indent}    width: `calc({w}px * ${{{scale}}})`,\n'
+        f'{indent}    height: `calc({h}px * ${{{scale}}})`,\n'
+        f'{indent}    objectFit: "contain",\n'
+        f'{indent}  }}}}\n'
+        f'{indent}/>'
+    )
+
+
+def _render_rectangle(node: dict, indent: str, scale: str = "scale") -> str:
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 100);  h = node.get("height", 40)
-    bg = node.get("backgroundColor", node.get("fillColor", "#E5E5E5"))
+    bg = node.get("backgroundColor", "")
     gradient = node.get("gradient", "")
     radius   = node.get("cornerRadius", 0)
     opacity  = node.get("opacity", 1)
     bc       = node.get("borderColor", "");  bw = node.get("borderWidth", 0)
-
-    parts = [
-        ("position", "'absolute'"), ("left", f"'{x}px'"), ("top", f"'{y}px'"),
-        ("width", f"'{w}px'"), ("height", f"'{h}px'"),
-    ]
-    parts.append(("background", f"'{gradient}'") if gradient else ("backgroundColor", f"'{bg}'"))
-    if radius:  parts.append(("borderRadius", f"'{radius}px'"))
-    if opacity != 1:  parts.append(("opacity", str(opacity)))
-    if bc and bw:  parts.append(("border", f"'{bw}px solid {bc}'"))
-
-    style = _make_style(parts)
     name  = _safe_comment(node.get("name", "rect"))
+
+    sp = [
+        f"position: 'absolute'",
+        f"left: `calc({x}px * ${{{scale}}})`",
+        f"top: `calc({y}px * ${{{scale}}})`",
+        f"width: `calc({w}px * ${{{scale}}})`",
+        f"height: `calc({h}px * ${{{scale}}})`",
+    ]
+    if gradient:   sp.append(f"background: '{gradient}'")
+    elif bg and bg not in ("transparent", ""): sp.append(f"backgroundColor: '{bg}'")
+    if radius:     sp.append(f"borderRadius: `calc({radius}px * ${{{scale}}})`")
+    if opacity != 1: sp.append(f"opacity: {opacity}")
+    if bc and bw:
+        sp.append(f"border: `${{Math.round({bw} * {scale})}}px solid {bc}`")
+    else:
+        bt_c = node.get("borderTopColor",    ""); bt_w = node.get("borderTopWidth",    0)
+        bb_c = node.get("borderBottomColor", ""); bb_w = node.get("borderBottomWidth", 0)
+        bl_c = node.get("borderLeftColor",   ""); bl_w = node.get("borderLeftWidth",   0)
+        br_c = node.get("borderRightColor",  ""); br_w = node.get("borderRightWidth",  0)
+        if bt_w: sp.append(f"borderTop: `${{Math.round({bt_w} * {scale})}}px solid {bt_c}`")
+        if bb_w: sp.append(f"borderBottom: `${{Math.round({bb_w} * {scale})}}px solid {bb_c}`")
+        if bl_w: sp.append(f"borderLeft: `${{Math.round({bl_w} * {scale})}}px solid {bl_c}`")
+        if br_w: sp.append(f"borderRight: `${{Math.round({br_w} * {scale})}}px solid {br_c}`")
+    style = ", ".join(sp)
     return f"{indent}{{/* {name} */}}\n{indent}<div style={{{{ {style} }}}} />"
 
 
-def _render_line(node: dict, indent: str) -> str:
+def _render_line(node: dict, indent: str, scale: str = "scale") -> str:
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 100)
     bg = node.get("backgroundColor", node.get("color", "#CCCCCC"))
     sw = node.get("strokeWeight", node.get("height", 1))
-    parts = [
-        ("position", "'absolute'"), ("left", f"'{x}px'"), ("top", f"'{y}px'"),
-        ("width", f"'{w}px'"), ("height", f"'{sw}px'"), ("backgroundColor", f"'{bg}'"),
+    sp = [
+        f"position: 'absolute'",
+        f"left: `calc({x}px * ${{{scale}}})`",
+        f"top: `calc({y}px * ${{{scale}}})`",
+        f"width: `calc({w}px * ${{{scale}}})`",
+        f"height: `calc({sw}px * ${{{scale}}})`",
     ]
-    return f"{indent}<div style={{{{ {_make_style(parts)} }}}} />"
+    if bg and bg not in ("transparent", ""): sp.append(f"backgroundColor: '{bg}'")
+    return f"{indent}<div style={{{{ {', '.join(sp)} }}}} />"
 
 
-def _render_vector(node: dict, indent: str) -> str:
+def _render_vector(node: dict, indent: str, scale: str = "scale") -> str:
     if node.get("imageHash"):
-        return _render_image(node, indent)
+        return _render_image(node, indent, scale)
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 40);  h = node.get("height", 40)
-    bg = node.get("backgroundColor", "#AAAAAA")
+    bg = node.get("backgroundColor", "")
     radius  = 9999 if node.get("type", "").lower() == "ellipse" else node.get("cornerRadius", 0)
     opacity = node.get("opacity", 1)
     bc = node.get("borderColor", "");  bw = node.get("borderWidth", 0)
-
-    parts = [
-        ("position", "'absolute'"), ("left", f"'{x}px'"), ("top", f"'{y}px'"),
-        ("width", f"'{w}px'"), ("height", f"'{h}px'"), ("backgroundColor", f"'{bg}'"),
+    sp = [
+        f"position: 'absolute'",
+        f"left: `calc({x}px * ${{{scale}}})`",
+        f"top: `calc({y}px * ${{{scale}}})`",
+        f"width: `calc({w}px * ${{{scale}}})`",
+        f"height: `calc({h}px * ${{{scale}}})`",
     ]
-    if radius:  parts.append(("borderRadius", f"'{radius}px'"))
-    if opacity != 1:  parts.append(("opacity", str(opacity)))
-    if bc and bw:  parts.append(("border", f"'{bw}px solid {bc}'"))
+    if bg and bg not in ("transparent", ""): sp.append(f"backgroundColor: '{bg}'")
+    if radius:    sp.append(f"borderRadius: `calc({radius}px * ${{{scale}}})`" if radius < 9999 else "borderRadius: '50%'")
+    if opacity != 1: sp.append(f"opacity: {opacity}")
+    if bc and bw: sp.append(f"border: `${{Math.round({bw}*{scale})}}px solid {bc}`")
     name = _safe_comment(node.get("name", "shape"))
-    return f"{indent}{{/* {name} */}}\n{indent}<div style={{{{ {_make_style(parts)} }}}} />"
+    return f"{indent}{{/* {name} */}}\n{indent}<div style={{{{ {', '.join(sp)} }}}} />"
 
 
-def _render_text(node: dict, indent: str) -> str:
+def _render_text(node: dict, indent: str, scale: str = "scale") -> str:
     x  = node.get("x", 0);  y = node.get("y", 0);  w = node.get("width", 200)
+    h  = node.get("height", 0)
     raw_text       = node.get("text", "")
     font_size      = node.get("fontSize", 16)
     font_weight    = _map_font_weight(node.get("fontWeight", 400))
-    color          = node.get("color", node.get("textColor", "#000000"))
+    color          = node.get("color", node.get("textColor", ""))
     line_height    = node.get("lineHeight", 1.4)
     letter_spacing = node.get("letterSpacing", 0)
     opacity        = node.get("opacity", 1)
@@ -344,118 +791,148 @@ def _render_text(node: dict, indent: str) -> str:
 
     tag = "h1" if font_size >= 64 else "h2" if font_size >= 42 else "h3" if font_size >= 28 else "h4" if font_size >= 20 else "p"
 
-    parts = [
-        ("position", "'absolute'"), ("left", f"'{x}px'"), ("top", f"'{y}px'"),
-        ("width", f"'{w}px'"), ("fontSize", f"'{font_size}px'"),
-        ("fontWeight", str(font_weight)), ("color", f"'{color}'"),
-        ("lineHeight", str(line_height)), ("margin", "'0'"),
-        ("padding", "'0'"), ("boxSizing", "'border-box'"),
+    sp = [
+        f"position: 'absolute'",
+        f"left: `calc({x}px * ${{{scale}}})`",
+        f"top: `calc({y}px * ${{{scale}}})`",
+        f"width: `calc({w}px * ${{{scale}}})`",
+        f"fontSize: `calc({font_size}px * ${{{scale}}})`",
+        f"fontWeight: {font_weight}",
+        f"lineHeight: {line_height}",
+        f"margin: '0'", f"padding: '0'", f"boxSizing: 'border-box'",        
     ]
-    if text_align in ("center", "right", "justify"):
-        parts.append(("textAlign", f"'{text_align}'"))
-    if letter_spacing:
-        parts.append(("letterSpacing", f"'{letter_spacing}px'"))
-    if opacity != 1:
-        parts.append(("opacity", str(opacity)))
+    if h: sp.append(f"maxHeight: `calc({h}px * ${{{scale}}})`")
+    if color and color not in ("transparent", ""): sp.append(f"color: '{color}'")
+    if text_align in ("center", "right", "justify"): sp.append(f"textAlign: '{text_align}'")
+    if letter_spacing: sp.append(f"letterSpacing: `calc({letter_spacing}px * ${{{scale}}})`")
+    if opacity != 1: sp.append(f"opacity: {opacity}")
 
-    style = _make_style(parts)
+    style = ", ".join(sp)
     name  = _safe_comment(node.get("name", "text"))
     inner = _render_text_content(_escape_jsx_text(raw_text))
     return f"{indent}{{/* {name} */}}\n{indent}<{tag} style={{{{ {style} }}}}>{inner}</{tag}>"
 
 
-def _render_image(node: dict, indent: str) -> str:
+def _render_image(node: dict, indent: str, scale: str = "scale") -> str:
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 400);  h = node.get("height", 300)
     src        = node.get("src", "")
     image_hash = node.get("imageHash", "")
     radius     = node.get("borderRadius", node.get("cornerRadius", 0))
-    bg         = node.get("backgroundColor", "#DDDDDD")
+    bg         = node.get("backgroundColor", "")
     alt        = _safe_str(node.get("name", "image"))
     opacity    = node.get("opacity", 1)
     name       = _safe_comment(node.get("name", "image"))
 
-    # ── Phase 1.2: resolve FIGMA_IMAGE: hash → real proxy URL ─────
-    # code.js now exports imageHash for all image-fill nodes.
-    # We resolve it here to a URL the backend can serve.
-    # The proxy endpoint: GET /api/image-proxy?hash=<imageHash>
     IMAGE_PROXY = "https://figma-backend-rahul.onrender.com/api/image-proxy"
 
     if image_hash and (not src or src in ("", "PLACEHOLDER") or src.startswith("FIGMA_IMAGE:")):
-        # Use the real proxy URL — renders an actual <img> tag
         src = f"{IMAGE_PROXY}?hash={image_hash}"
 
     base = [
-        ("position", "'absolute'"), ("left", f"'{x}px'"), ("top", f"'{y}px'"),
-        ("width", f"'{w}px'"), ("height", f"'{h}px'"),
+        f"position: 'absolute'",
+        f"left: `calc({x}px * ${{{scale}}})`",
+        f"top: `calc({y}px * ${{{scale}}})`",
+        f"width: `calc({w}px * ${{{scale}}})`",
+        f"height: `calc({h}px * ${{{scale}}})`",
     ]
-    if radius:      base.append(("borderRadius", f"'{radius}px'"))
-    if opacity != 1: base.append(("opacity", str(opacity)))
+    if radius:      base.append(f"borderRadius: `calc({radius}px * ${{{scale}}})`")
+    if opacity != 1: base.append(f"opacity: {opacity}")
 
-    # Real URL (either external or resolved proxy) → <img> tag
     if src and src not in ("", "PLACEHOLDER") and not src.startswith("FIGMA_IMAGE:"):
-        style = _make_style(base + [("objectFit", "'cover'"), ("backgroundColor", f"'{bg}'")])
+        img_parts = base + ["objectFit: 'cover'"]
+        if bg and bg not in ("transparent", ""): img_parts.append(f"backgroundColor: '{bg}'")
+        style = ", ".join(img_parts)
         return (
             f'{indent}{{/* {name} */}}\n'
             f'{indent}<img\n'
             f'{indent}  src="{src}"\n'
             f'{indent}  alt="{alt}"\n'
             f'{indent}  style={{{{ {style} }}}}\n'
-            f'{indent}  onError={{e => {{ e.currentTarget.style.opacity="0.3"; }}}}\n'
+            f'{indent}  onError={{e => {{ e.currentTarget.style.display="none"; }}}}\n'
             f'{indent}/>'
         )
 
-    # Hash present but proxy URL couldn't be built — render as bg-image div
     if src.startswith("FIGMA_IMAGE:"):
         proxy_url = f"{IMAGE_PROXY}?hash={image_hash}"
-        style = _make_style(base + [
-            ("backgroundImage",    f"'url({proxy_url})'"),
-            ("backgroundSize",     "'cover'"),
-            ("backgroundPosition", "'center'"),
-            ("backgroundColor",    f"'{bg}'"),
-        ])
+        div_parts = base + [
+            f"backgroundImage: 'url({proxy_url})'",
+            f"backgroundSize: 'cover'",
+            f"backgroundPosition: 'center'",
+        ]
+        if bg and bg not in ("transparent", ""): div_parts.append(f"backgroundColor: '{bg}'")
+        style = ", ".join(div_parts)
         return f'{indent}{{/* {name} */}}\n{indent}<div style={{{{ {style} }}}} />'
 
-    # No hash, no src — skip entirely (no grey box)
     return ""
 
 
 def _render_button(
     node: dict, indent: str,
     all_routes: list[dict], nav_context: dict, page_name: str,
+    scale: str = "scale",
 ) -> str:
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 160);  h = node.get("height", 48)
     text        = _escape_jsx_text(node.get("text", "Button"))
-    bg          = node.get("backgroundColor", "#4F46E5")
-    text_color  = node.get("textColor", "#FFFFFF")
+    node_name   = node.get("name", "button")
+    bg          = node.get("backgroundColor", "")
+    text_color  = node.get("textColor", "")
     radius      = node.get("cornerRadius", 8)
     font_size   = node.get("fontSize", 16)
     font_weight = _map_font_weight(node.get("fontWeight", "semibold"))
     bc = node.get("borderColor", "");  bw = node.get("borderWidth", 0)
     opacity = node.get("opacity", 1)
-    name = _safe_comment(node.get("name", "button"))
-    border_val = f"{bw}px solid {bc}" if bc and bw else "none"
+    name = _safe_comment(node_name)
 
-    parts = [
-        ("position", "'absolute'"), ("left", f"'{x}px'"), ("top", f"'{y}px'"),
-        ("width", f"'{w}px'"), ("height", f"'{h}px'"),
-        ("backgroundColor", f"'{bg}'"), ("color", f"'{text_color}'"),
-        ("borderRadius", f"'{radius}px'"), ("fontSize", f"'{font_size}px'"),
-        ("fontWeight", str(font_weight)), ("cursor", "'pointer'"),
-        ("border", f"'{border_val}'"), ("display", "'flex'"),
-        ("alignItems", "'center'"), ("justifyContent", "'center'"),
-        ("transition", "'opacity 0.2s'"), ("boxSizing", "'border-box'"),
-        ("whiteSpace", "'nowrap'"),
+    sp = [
+        f"position: 'absolute'",
+        f"left: `calc({x}px * ${{{scale}}})`",
+        f"top: `calc({y}px * ${{{scale}}})`",
+        f"width: `calc({w}px * ${{{scale}}})`",
+        f"height: `calc({h}px * ${{{scale}}})`",
+        f"borderRadius: `calc({radius}px * ${{{scale}}})`",
+        f"fontSize: `calc({font_size}px * ${{{scale}}})`",
+        f"fontWeight: {font_weight}",
+        f"cursor: 'pointer'",        
+        f"display: 'flex'",
+        f"alignItems: 'center'",
+        f"justifyContent: 'center'",
+        f"transition: 'opacity 0.2s'",
+        f"boxSizing: 'border-box'",
+        f"whiteSpace: 'nowrap'",
+        f"outline: 'none'",
     ]
-    if opacity != 1:  parts.append(("opacity", str(opacity)))
+    if bc and int(bw) > 0:
+        sp.append(f"border: `${{Math.round({bw}*{scale})}}px solid {bc}`")
+    else:
+        sp.append("border: 'none'")
+    if bg and bg not in ("transparent", ""): sp.append(f"backgroundColor: '{bg}'")
+    if text_color and text_color not in ("transparent", ""): sp.append(f"color: '{text_color}'")
+    if opacity != 1: sp.append(f"opacity: {opacity}")
 
-    style  = _make_style(parts)
-    target = _resolve_nav(node.get("name", ""), node.get("text", ""),
-                          page_name, nav_context, all_routes)
-    hover  = "onMouseEnter={e=>e.currentTarget.style.opacity='0.85'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}"
+    style  = ", ".join(sp)
+    target = _resolve_nav(node_name, node.get("text", ""), page_name, nav_context, all_routes)
 
-    click = f" onClick={{() => navigate(\"{target}\")}}" if target else ""
+    # ── Auto-wire action buttons by name/text ────────────────────
+    nl = node_name.lower();  tl = text.lower()
+    if target:
+        click = f' onClick={{() => navigate("{target}")}}'
+    elif any(k in nl or k in tl for k in ("close", "cancel", "dismiss", "×", "✕", "x btn")):
+        click = " onClick={() => { if (typeof onClose === 'function') onClose(); else window.history.back(); }}"
+    elif any(k in nl or k in tl for k in ("back", "return", "previous", "prev", "go back")):
+        click = " onClick={() => window.history.back()}"
+    elif any(k in nl or k in tl for k in ("minimise", "minimize")):
+        # Bug 3 fix: use the parent container's minimize state key if provided.
+        # This ensures the button and the collapsible panel share the same state.
+        # parent_minimize_key is passed down from _render_container.
+        effective_key = node.get("_minimize_key") or re.sub(r"[^\w]", "", node_name.title()) or "Panel"
+        click = f" onClick={{() => setMinimized{effective_key}(prev => !prev)}}"
+    else:
+        click = ""
+
+    hover = "onMouseEnter={e=>e.currentTarget.style.opacity='0.85'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}"
+
     return (
         f"{indent}{{/* {name} */}}\n"
         f"{indent}<button style={{{{ {style} }}}}{click} {hover}>\n"
@@ -464,26 +941,30 @@ def _render_button(
     )
 
 
+def _is_minimize_node(node: dict) -> bool:
+    """Return True if this node is a minimize/minimise button."""
+    nl = node.get("name", "").lower()
+    tl = node.get("text", "").lower()
+    return any(k in nl or k in tl for k in ("minimise", "minimize"))
+
+
 # ─────────────────────────────────────────────────────────────────
 # CONTAINER RENDERER
-# Handles FRAME / GROUP / COMPONENT / INSTANCE
-#
-# KEY: If the container's name matches a @nav: button mapping,
-# we wrap it in a clickable div with navigate(). This handles
-# Figma nav items that are component instances rather than buttons.
 # ─────────────────────────────────────────────────────────────────
 
 def _render_container(
     node: dict,
     all_routes: list[dict], nav_context: dict, page_name: str,
     indent: str, depth: int,
+    comp_map: dict, used_components: set,
+    scale: str = "scale",
 ) -> str:
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 0);  h = node.get("height", 0)
-    bg      = node.get("backgroundColor", "")
-    radius  = node.get("cornerRadius", 0)
-    opacity = node.get("opacity", 1)
-    name    = _safe_comment(node.get("name", "group"))
+    bg        = node.get("backgroundColor", "")
+    radius    = node.get("cornerRadius", 0)
+    opacity   = node.get("opacity", 1)
+    name      = _safe_comment(node.get("name", "group"))
     node_type = node.get("type", "").lower()
 
     is_frame_type = node_type in ("frame", "component", "instance")
@@ -493,52 +974,166 @@ def _render_container(
     has_image_fill = node.get("imageFill", False) and bool(image_hash)
     IMAGE_PROXY    = "https://figma-backend-rahul.onrender.com/api/image-proxy"
 
-    parts = [
-        ("position", "'absolute'"), ("left", f"'{x}px'"), ("top", f"'{y}px'"),
-        ("width", f"'{w}px'"), ("height", f"'{h}px'"),
+    # ── Bug 1 fix ─────────────────────────────────────────────────
+    # A FRAME/COMPONENT node in Figma defines its OWN coordinate space.
+    # Its children's x/y are relative to the frame's top-left corner,
+    # NOT the page origin.
+    #
+    # Correct rendering:
+    #   - The container itself: position absolute, placed at its x/y on parent
+    #   - The inner wrapper:    position relative (establishes new origin for children)
+    #   - Children:             position absolute, left/top = their local x/y
+    #
+    # Without the inner wrapper, a sidebar at page-x=0,y=80 with a button
+    # at local y=600 would render at page-y=600, not sidebar-y=600.
+    #
+    # For GROUP nodes, Figma children coords are also local, so same fix applies.
+    has_children = bool(node.get("children"))
+
+    cp_outer = [
+        f"position: 'absolute'",
+        f"left: `calc({x}px * ${{{scale}}})`",
+        f"top: `calc({y}px * ${{{scale}}})`",
+        f"width: `calc({w}px * ${{{scale}}})`",
+        f"height: `calc({h}px * ${{{scale}}})`",
     ]
     if has_image_fill:
-        # Resolve imageHash → actual proxy URL for CSS background-image
         proxy_url = f"{IMAGE_PROXY}?hash={image_hash}"
-        parts += [
-            ("backgroundImage",    f"'url({proxy_url})'"),
-            ("backgroundSize",     "'cover'"),
-            ("backgroundPosition", "'center'"),
+        cp_outer += [
+            f"backgroundImage: 'url({proxy_url})'",
+            f"backgroundSize: 'cover'",
+            f"backgroundPosition: 'center'",
         ]
     elif bg and bg not in ("transparent", ""):
-        parts.append(("backgroundColor", f"'{bg}'"))
-    if radius:   parts.append(("borderRadius", f"'{radius}px'"))
-    if clips:    parts.append(("overflow", "'hidden'"))
-    if opacity != 1: parts.append(("opacity", str(opacity)))
+        cp_outer.append(f"backgroundColor: '{bg}'")
+    if radius:   cp_outer.append(f"borderRadius: `calc({radius}px * ${{{scale}}})`")
+    if clips:    cp_outer.append(f"overflow: 'hidden'")
+    if opacity != 1: cp_outer.append(f"opacity: {opacity}")
 
-    style = _make_style(parts)
+    # ── Individual side borders on containers ─────────────────
+    bc = node.get("borderColor", ""); bw = node.get("borderWidth", 0)
+    if bc and bw:
+        cp_outer.append(f"border: `${{Math.round({bw} * {scale})}}px solid {bc}`")
+    else:
+        bt_c = node.get("borderTopColor",    ""); bt_w = node.get("borderTopWidth",    0)
+        bb_c = node.get("borderBottomColor", ""); bb_w = node.get("borderBottomWidth", 0)
+        bl_c = node.get("borderLeftColor",   ""); bl_w = node.get("borderLeftWidth",   0)
+        br_c = node.get("borderRightColor",  ""); br_w = node.get("borderRightWidth",  0)
+        if bt_w: cp_outer.append(f"borderTop: `${{Math.round({bt_w} * {scale})}}px solid {bt_c}`")
+        if bb_w: cp_outer.append(f"borderBottom: `${{Math.round({bb_w} * {scale})}}px solid {bb_c}`")
+        if bl_w: cp_outer.append(f"borderLeft: `${{Math.round({bl_w} * {scale})}}px solid {bl_c}`")
+        if br_w: cp_outer.append(f"borderRight: `${{Math.round({br_w} * {scale})}}px solid {br_c}`")
 
-    # Check if this container should be a nav link
+    # ── Auto-layout → flexbox ──────────────────────────────────
+    layout_mode = node.get("layoutMode", "")
+    if layout_mode in ("HORIZONTAL", "VERTICAL"):
+        flex_dir   = "row" if layout_mode == "HORIZONTAL" else "column"
+        axis_map   = {"MIN": "flex-start", "CENTER": "center", "MAX": "flex-end", "SPACE_BETWEEN": "space-between"}
+        justify    = axis_map.get(node.get("primaryAxisAlignItems", "MIN"), "flex-start")
+        align      = axis_map.get(node.get("counterAxisAlignItems", "MIN"), "flex-start")
+        gap        = node.get("itemSpacing", 0)
+        pt         = node.get("paddingTop",    0)
+        pb         = node.get("paddingBottom", 0)
+        pl         = node.get("paddingLeft",   0)
+        pr         = node.get("paddingRight",  0)
+        cp_outer.append(f"display: 'flex'")
+        cp_outer.append(f"flexDirection: '{flex_dir}'")
+        cp_outer.append(f"justifyContent: '{justify}'")
+        cp_outer.append(f"alignItems: '{align}'")
+        if gap:  cp_outer.append(f"gap: `calc({gap}px * ${{{scale}}})`")
+        if pt:   cp_outer.append(f"paddingTop: `calc({pt}px * ${{{scale}}})`")
+        if pb:   cp_outer.append(f"paddingBottom: `calc({pb}px * ${{{scale}}})`")
+        if pl:   cp_outer.append(f"paddingLeft: `calc({pl}px * ${{{scale}}})`")
+        if pr:   cp_outer.append(f"paddingRight: `calc({pr}px * ${{{scale}}})`")
+
+    # Nav link detection
     target = _resolve_nav(node.get("name", ""), "", page_name, nav_context, all_routes)
     if target:
-        parts.append(("cursor", "'pointer'"))
-        style = _make_style(parts)
+        cp_outer.append(f"cursor: 'pointer'")
 
-    # Render visible children only
+    # Minimize detection — check if this container is a minimizable panel.
+    # Detect by name patterns: "sidebar", "panel", "drawer", or any container
+    # that contains a minimize button among its direct children.
     raw_kids     = node.get("children", [])
     visible_kids = [c for c in raw_kids if isinstance(c, dict) and _is_visible(c)]
 
+    # Check if any direct child is a minimize button
+    has_minimize_child = any(
+        _is_minimize_node(c) for c in visible_kids
+    )
+    minimize_state_key = None
+    if has_minimize_child:
+        minimize_state_key = re.sub(r"[^\w]", "", node.get("name", "Panel").title()) or "Panel"
+
+    outer_style = ", ".join(cp_outer)
+    click_attr  = f' onClick={{() => navigate("{target}")}}'  if target else ""
+    hover_attr  = " onMouseEnter={e=>e.currentTarget.style.opacity='0.9'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}" if target else ""
+
+    # Render children — they keep their local x/y coords
     child_lines = []
     for child in visible_kids:
-        jsx = _render_node(child, all_routes, nav_context, page_name, depth + 1)
+        # Stamp the parent's minimize key onto any minimize button child
+        # so it toggles the same state as the container wrapper.
+        if minimize_state_key and _is_minimize_node(child):
+            child = dict(child)                          # shallow copy — don't mutate original
+            child["_minimize_key"] = minimize_state_key
+        jsx = _render_node(child, all_routes, nav_context, page_name,
+                           depth + 1, comp_map, used_components, scale)
         if jsx:
             child_lines.append(jsx)
 
     children_str = "\n".join(child_lines)
 
-    click_attr = f' onClick={{() => navigate("{target}")}}'  if target else ""
-    hover_attr = " onMouseEnter={e=>e.currentTarget.style.opacity='0.9'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}" if target else ""
+    # ── Build the two-layer structure ─────────────────────────────
+    # Outer div: absolute positioned at x/y, sized w/h, has bg/radius/overflow
+    # Inner div: position relative, same w/h — children anchor to THIS origin
+    if has_children:
+        inner_style = (
+            f"position: 'relative', "
+            f"width: '100%', "
+            f"height: '100%'"
+        )
 
+        if minimize_state_key:
+            # Minimizable panel: show collapsed bar when minimized
+            restore_bar = (
+                f'{indent}  {{minimized{minimize_state_key} && (\n'
+                f'{indent}    <div\n'
+                f'{indent}      onClick={{() => setMinimized{minimize_state_key}(false)}}\n'
+                f'{indent}      style={{{{ {outer_style}, cursor: \'pointer\', '
+                f'display: \'flex\', alignItems: \'center\', justifyContent: \'center\','
+                f'height: `calc(36px * ${{{scale}}})` }}}}\n'
+                f'{indent}    >\n'
+                f'{indent}      <span style={{{{ fontSize: `calc(12px * ${{{scale}}})`, '
+                f'color: \'{bg or "#666"}\' }}}}>▶ Restore</span>\n'
+                f'{indent}    </div>\n'
+                f'{indent}  )}}\n'
+            )
+            return (
+                f"{indent}{{/* {name} — minimizable panel */}}\n"
+                f"{restore_bar}"
+                f"{indent}{{!minimized{minimize_state_key} && (\n"
+                f"{indent}<div style={{{{ {outer_style} }}}}{click_attr}{hover_attr}>\n"
+                f"{indent}  <div style={{{{ {inner_style} }}}}>\n"
+                f"{children_str}\n"
+                f"{indent}  </div>\n"
+                f"{indent}</div>\n"
+                f"{indent})}}"
+            )
+
+        return (
+            f"{indent}{{/* {name} */}}\n"
+            f"{indent}<div style={{{{ {outer_style} }}}}{click_attr}{hover_attr}>\n"
+            f"{indent}  <div style={{{{ {inner_style} }}}}>\n"
+            f"{children_str}\n"
+            f"{indent}  </div>\n"
+            f"{indent}</div>"
+        )
+
+    # Leaf container (no children) — single div is fine
     return (
         f"{indent}{{/* {name} */}}\n"
-        f"{indent}<div style={{{{ {style} }}}}{click_attr}{hover_attr}>\n"
-        + children_str +
-        f"\n{indent}</div>"
+        f"{indent}<div style={{{{ {outer_style} }}}}{click_attr}{hover_attr} />"
     )
 
 
@@ -573,7 +1168,7 @@ def _generate_app(routes: list[dict]) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────
-# BOILERPLATE
+# BOILERPLATE GENERATORS  (unchanged from original)
 # ─────────────────────────────────────────────────────────────────
 
 def _generate_main() -> str:
@@ -590,7 +1185,7 @@ def _generate_main() -> str:
 def _generate_index_html(app_name: str) -> str:
     safe = re.sub(r'[<>"\'&]', "", app_name)
     return (
-        "<!DOCTYPE html>\n<html lang=\"en\">\n  <head>\n"
+        '<!DOCTYPE html>\n<html lang="en">\n  <head>\n'
         '    <meta charset="UTF-8" />\n'
         '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n'
         f"    <title>{safe}</title>\n"
@@ -640,10 +1235,13 @@ def _generate_index_css() -> str:
         "body {\n  margin: 0;\n  padding: 0;\n"
         '  font-family: "Inter", system-ui, sans-serif;\n'
         "  -webkit-font-smoothing: antialiased;\n  overflow-x: hidden;\n}\n"
-        "html { scroll-behavior: smooth; }\n"
-        "::-webkit-scrollbar { width: 6px; }\n"
-        "::-webkit-scrollbar-track { background: #f1f1f1; }\n"
-        "::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }\n"
+        "html { scroll-behavior: smooth; }\n\n"
+        # Neutral scrollbar — transparent track so it adapts to any bg color
+        "::-webkit-scrollbar { width: 6px; height: 6px; }\n"
+        "::-webkit-scrollbar-track { background: transparent; }\n"
+        "::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.4); border-radius: 3px; }\n"
+        "::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,0.7); }\n"
+        "* { scrollbar-width: thin; scrollbar-color: rgba(128,128,128,0.4) transparent; }\n"
     )
 
 
@@ -653,23 +1251,27 @@ def _generate_index_css() -> str:
 
 def _to_safe_component(name: str, index: int) -> str:
     cleaned = re.sub(r"[^\w\s\-]", " ", name)
-    pascal  = "".join(w.capitalize() for w in re.split(r"[\s\-_]+", cleaned.strip()) if w and re.match(r"\w", w[0]))
+    pascal  = "".join(w.capitalize() for w in re.split(r"[\s\-_]+", cleaned.strip())
+                      if w and re.match(r"\w", w[0]))
     return pascal if pascal and pascal[0].isalpha() else f"Page{index + 1}"
 
 def _to_safe_slug(name: str, index: int, seen: set) -> str:
-    slug = re.sub(r"-+", "-", re.sub(r"[\s_]+", "-", re.sub(r"[^\w\s\-]", "", name.lower()).strip()).strip("-")) or f"page-{index + 1}"
+    slug = re.sub(r"-+", "-", re.sub(r"[\s_]+", "-",
+           re.sub(r"[^\w\s\-]", "", name.lower()).strip()).strip("-")) or f"page-{index + 1}"
     orig, counter = slug, 2
     while slug in seen:
         slug = f"{orig}-{counter}"; counter += 1
     return slug
 
-def _to_pascal(name: str) -> str:
-    return "".join(w.capitalize() for w in re.split(r"[\s\-_]+", re.sub(r"[^\w\s\-]", " ", name).strip()) if w)
+def _to_camel(name: str) -> str:
+    pascal = name
+    return pascal[0].lower() + pascal[1:] if pascal else name
 
 def _map_font_weight(weight) -> int:
     if isinstance(weight, int): return weight
     return {"thin":100,"extralight":200,"light":300,"regular":400,"normal":400,
-            "medium":500,"semibold":600,"bold":700,"extrabold":800,"black":900}.get(str(weight).lower(), 400)
+            "medium":500,"semibold":600,"bold":700,"extrabold":800,"black":900
+            }.get(str(weight).lower(), 400)
 
 def _safe_comment(name: str) -> str:
     return re.sub(r"[{}\*\/]", "", name).strip()
@@ -678,7 +1280,8 @@ def _safe_str(name: str) -> str:
     return re.sub(r'["\'`<>]', "", name).strip()
 
 def _escape_jsx_text(text: str) -> str:
-    return text.replace("&","&amp;").replace("{","&#123;").replace("}","&#125;").replace("<","&lt;").replace(">","&gt;")
+    return (text.replace("&", "&amp;").replace("{", "&#123;")
+                .replace("}", "&#125;").replace("<", "&lt;").replace(">", "&gt;"))
 
 def _render_text_content(text: str) -> str:
     if "\n" in text or "\\n" in text:
