@@ -13,7 +13,7 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 IMAGE_PROXY_BASE = os.getenv(
     "IMAGE_PROXY_BASE",
-    "https://figma-backend-rahul.onrender.com/api/image-proxy"
+    "https://wingx-2vpp.onrender.com/api/image-proxy"
 )
 
 # ─────────────────────────────────────────────────────────────────
