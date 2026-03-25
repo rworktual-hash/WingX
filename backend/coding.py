@@ -1,19 +1,21 @@
 import os
 import json
 import re
+import asyncio
 from google import genai
 from dotenv import load_dotenv
+
 from themes import select_themes_for_prompt
 import logger as log
 
 load_dotenv()
 
 planner_model = os.getenv("GEMINI_PLANNER_MODEL")
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY1"))
 
 IMAGE_PROXY_BASE = os.getenv(
     "IMAGE_PROXY_BASE",
-    "https://wingx-2vpp.onrender.com/api/image-proxy"
+    "http://localhost:9000/api/image-proxy"
 )
 
 # ─────────────────────────────────────────────────────────────────
@@ -76,99 +78,89 @@ Sections should start roughly every 600–900px vertically.
 
 Avoid cramped layouts.
 
-════════════════════════════════════════
-ELEMENT TYPES
-════════════════════════════════════════
+══════════════════════════════════════════
+ELEMENT TYPES:
+══════════════════════════════════════════
 
-RECTANGLE
-Used for backgrounds, surfaces, cards, overlays, and dividers.
+RECTANGLE — backgrounds, cards, dividers, overlays:
+{
+  "type": "rectangle",
+  "name": "Card Background",
+  "x": 120, "y": 200,
+  "width": 580, "height": 320,
+  "backgroundColor": "#1A1A1A",
+  "cornerRadius": 16,
+  "opacity": 1
+}
 
-Properties:
-type
-name
-x
-y
-width
-height
-backgroundColor
-cornerRadius
-opacity (optional)
+TEXT — headings, body, labels, captions:
+{
+  "type": "text",
+  "name": "Hero Headline",
+  "x": 120, "y": 250,
+  "width": 700,
+  "text": "Crafting digital\\nexperiences that\\nmatter.",
+  "fontSize": 82,
+  "fontWeight": "bold",
+  "color": "#FFFFFF",
+  "lineHeight": 1.1,
+  "letterSpacing": 0
+}
 
-TEXT
-Used for headings, paragraphs, labels.
+IMAGE — photos, thumbnails, illustrations:
+{
+  "type": "image",
+  "name": "Hero Image",
+  "x": 770, "y": 200,
+  "width": 550, "height": 650,
+  "borderRadius": 24,
+  "backgroundColor": "#2A2A2A",
+  "src": "PLACEHOLDER",
+  "imageKeyword": "workspace"
+}
 
-Properties:
-type
-name
-x
-y
-width
-text
-fontSize
-fontWeight
-color
-lineHeight
-letterSpacing
+BUTTON — CTAs, nav buttons, outlined links:
+  Filled:
+  {
+    "type": "button",
+    "name": "CTA Button",
+    "x": 120, "y": 640,
+    "width": 200, "height": 60,
+    "text": "View My Work",
+    "backgroundColor": "#4F46E5",
+    "textColor": "#FFFFFF",
+    "cornerRadius": 8,
+    "fontSize": 16,
+    "fontWeight": "semibold"
+  }
+  Outlined:
+  {
+    "type": "button",
+    "name": "Secondary Button",
+    "x": 340, "y": 640,
+    "width": 180, "height": 60,
+    "text": "Learn More",
+    "backgroundColor": "transparent",
+    "textColor": "#FFFFFF",
+    "cornerRadius": 8,
+    "borderColor": "#FFFFFF",
+    "borderWidth": 1,
+    "fontSize": 16,
+    "fontWeight": "medium"
+  }
 
-IMAGE
-Used for photos, illustrations, thumbnails.
+GROUP — related elements like nav links, skill tags, icon rows:
+{
+  "type": "group",
+  "name": "Skill Tags",
+  "x": 120, "y": 2890,
+  "children": [
+    { "type": "rectangle", "name": "Tag BG 1", "x": 120, "y": 2890, "width": 100, "height": 40, "backgroundColor": "#2A2A2A", "cornerRadius": 20 },
+    { "type": "text", "name": "Tag Text 1", "x": 150, "y": 2900, "text": "Figma", "fontSize": 14, "color": "#FFFFFF" }
+  ]
+}
 
-Properties:
-type
-name
-x
-y
-width
-height
-borderRadius
-backgroundColor
-src
-imageKeyword
 
-src must always be:
-"PLACEHOLDER"
-
-imageKeyword must describe the image clearly.
-
-Examples:
-"startup office"
-"mobile app dashboard"
-"team collaboration"
-"modern workspace"
-
-BUTTON
-
-Filled button:
-
-type
-name
-x
-y
-width
-height
-text
-backgroundColor
-textColor
-cornerRadius
-fontSize
-fontWeight
-
-Outlined button additionally includes:
-
-borderColor
-borderWidth
-
-GROUP
-Groups related UI elements.
-
-Properties:
-type
-name
-x
-y
-children (array)
-
-Children coordinates remain absolute within the frame.
 
 ════════════════════════════════════════
 WEBSITE STRUCTURE REQUIREMENTS
@@ -304,27 +296,25 @@ Divider example:
 rectangle height = 1
 opacity ≈ 0.2
 
-════════════════════════════════════════
-DESIGN QUALITY
-════════════════════════════════════════
-
-The design must:
-
-Look like a real production website
-
-Use consistent spacing
-
-Use realistic marketing copy
-
-Avoid overlapping elements
-
-Avoid placeholder lorem ipsum
-
-Use meaningful product descriptions
-
-The layout must feel modern, balanced, and professional.
-
-Generate the JSON layout now.
+══════════════════════════════════════════
+DESIGN QUALITY REQUIREMENTS:
+══════════════════════════════════════════
+- Use the provided theme colors throughout: background, surfaces, accent, text
+- Typography hierarchy:
+    Hero heading:  fontSize 72–96, fontWeight "bold", lineHeight 1.0–1.15
+    Section title: fontSize 42–56, fontWeight "bold"
+    Sub-heading:   fontSize 24–32, fontWeight "semibold"
+    Body text:     fontSize 16–20, color slightly muted (e.g. #A0A0A0)
+    Labels/caps:   fontSize 12–14, fontWeight "bold", letterSpacing 2
+- Layout:
+    Navbar:       y=0, height=80–90px. Logo at x=120 y≈28. Nav links right side. CTA button far right.
+    Hero:         Starts at y≈150. Big heading left, hero image right.
+    Sections:     120px padding top/bottom. Section label (caps) then big heading then content.
+    Cards:        backgroundColor slightly lighter than page bg. cornerRadius 12–20.
+    Footer:       Near bottom. Thin divider line (rectangle h=1), copyright left, social links right.
+- All coordinates MUST be inside the frame (0 to frame width, 0 to frame height)
+- Include REALISTIC content for the project domain — real names, descriptions, copy
+- Make it look like a professional real website, not a wireframe
 """
 
 
@@ -393,7 +383,7 @@ def parse_coding_response(raw: str, page_name: str) -> list:
         raise ValueError(f"Invalid JSON for '{page_name}': {e}\n\nRaw:\n{raw[:800]}")
 
 
-async def generate_page_nodes(page: dict, project_title: str, user_prompt: str) -> dict:
+async def generate_page_nodes(page: dict, project_title: str, user_prompt: str, layout_context: dict = None, screenshot_base64: str = None, screenshot_media_type: str = "image/png") -> dict:
     """
     Generate ONE page.
     Returns { page_id, page_name, theme, frame }
@@ -406,19 +396,71 @@ async def generate_page_nodes(page: dict, project_title: str, user_prompt: str) 
 
     log.info("CODING", f"Generating page={page_name!r}  size={page_width}×{page_height}")
 
-    # ── Select theme ──────────────────────────────────────────────
-    themes         = select_themes_for_prompt(user_prompt, max_themes=1)
-    selected_theme = themes[0] if themes else {
-        "name":        "Dark Pro",
-        "category":    "dark",
-        "colors":      ["#111111", "#1A1A1A", "#4F46E5", "#818CF8", "#FFFFFF"],
-        "animation":   "fade",
-        "description": "Dark background with indigo accent",
-    }
-    theme_block = build_theme_block(selected_theme)
-    bg_color    = selected_theme["colors"][0]
+    # ── Select theme — prefer layout_context from screenshot ──────
+    if layout_context and layout_context.get("color_palette"):
+        # Screenshot was provided — build theme directly from extracted visual style
+        raw_palette   = layout_context.get("color_palette", "")
+        visual_style  = layout_context.get("visual_style", "")
+        components    = layout_context.get("detected_components", [])
+        sections      = layout_context.get("detected_sections", [])
 
-    log.info("CODING", f"Theme selected: {selected_theme['name']!r}")
+        # Parse color palette string into individual hex colors
+        hex_colors = re.findall(r'#[0-9A-Fa-f]{3,8}', raw_palette + " " + visual_style)
+
+        if len(hex_colors) >= 2:
+            # Enough colors extracted — build theme from screenshot
+            while len(hex_colors) < 5:
+                hex_colors.append(hex_colors[-1])
+            selected_theme = {
+                "name":        "Screenshot Reference",
+                "category":    "custom",
+                "colors":      hex_colors[:5],
+                "animation":   "fade",
+                "description": f"Theme extracted from reference screenshot. Style: {visual_style[:120]}",
+            }
+            log.info("CODING", f"Theme from screenshot — colors: {hex_colors[:5]}")
+        else:
+            # Colors not parseable — pass the visual description as extra context to Gemini
+            selected_theme = None
+            log.info("CODING", "Screenshot provided but no hex colors found — injecting visual description")
+
+        # Build a richer theme block that describes the visual style in words
+        if selected_theme:
+            theme_block = build_theme_block(selected_theme)
+        else:
+            theme_block = (
+                f"VISUAL STYLE REFERENCE (from screenshot):\n"
+                f"  Style description: {visual_style}\n"
+                f"  Color palette description: {raw_palette}\n"
+                f"  Detected sections: {', '.join(sections[:8])}\n"
+                f"  Detected components: {', '.join(components[:8])}\n"
+                f"  IMPORTANT: Reproduce this visual style as faithfully as possible.\n"
+                f"  Use colors, spacing, and component patterns that match this description.\n"
+            )
+            # Still need a bg_color fallback — pick dark or light based on keywords
+            bg_color = "#111111" if any(w in visual_style.lower() for w in ["dark", "black", "night"]) else "#FFFFFF"
+            selected_theme = {
+                "name": "Screenshot Reference",
+                "colors": [bg_color, bg_color, "#4F46E5", "#818CF8", "#FFFFFF"],
+                "animation": "fade",
+            }
+
+        bg_color = selected_theme["colors"][0]
+        log.info("CODING", f"Using screenshot-derived theme for page={page_name!r}")
+
+    else:
+        # No screenshot — fall back to keyword-based theme selection
+        themes         = select_themes_for_prompt(user_prompt, max_themes=1)
+        selected_theme = themes[0] if themes else {
+            "name":        "Dark Pro",
+            "category":    "dark",
+            "colors":      ["#111111", "#1A1A1A", "#4F46E5", "#818CF8", "#FFFFFF"],
+            "animation":   "fade",
+            "description": "Dark background with indigo accent",
+        }
+        theme_block = build_theme_block(selected_theme)
+        bg_color    = selected_theme["colors"][0]
+        log.info("CODING", f"Theme selected from keywords: {selected_theme['name']!r}")
 
     # ── Format image specs ────────────────────────────────────────
     images_section = ""
@@ -433,17 +475,43 @@ async def generate_page_nodes(page: dict, project_title: str, user_prompt: str) 
                 f"  intent: {img['image_prompt']}\n\n"
             )
 
-    full_prompt = f"""{CODING_SYSTEM_PROMPT}
+    # Build visual reference block from layout_context if available
+    visual_ref_block = ""
+    if layout_context:
+        visual_ref_block = (
+            f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"VISUAL REFERENCE (from user's screenshot):\n"
+            f"  Layout type:    {layout_context.get('layout_type', 'unknown')}\n"
+            f"  Screen type:    {layout_context.get('screen_type', 'full_page')}\n"
+            f"  Visual style:   {layout_context.get('visual_style', '')}\n"
+            f"  Color palette:  {layout_context.get('color_palette', '')}\n"
+            f"  Sections seen:  {', '.join(layout_context.get('detected_sections', []))}\n"
+            f"  Components:     {', '.join(layout_context.get('detected_components', []))}\n"
+            f"  CRITICAL: Your output must visually match this reference style.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
+    # ── UI state context block (state-per-frame mode) ─────────────
+    ui_state_block = ""
+    if page.get("ui_state") or page.get("feature_group"):
+        ui_state_block = (
+            f"\nUI STATE CONTEXT:\n"
+            f"  Feature group: {page.get('feature_group', '')}\n"
+            f"  UI state type: {page.get('ui_state', '')}\n"
+            f"  This frame shows ONE specific UI moment. Render exactly this state.\n"
+        )
+
+    text_prompt = f"""{CODING_SYSTEM_PROMPT}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PROJECT:      {project_title}
 USER REQUEST: {user_prompt}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
+{visual_ref_block}
 {theme_block}
-
+{ui_state_block}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PAGE TO GENERATE:
+FRAME TO GENERATE:
   name:        {page_name}
   description: {page_desc}
   width:       {page_width}px
@@ -462,11 +530,23 @@ REMINDER:
 Generate the children array now. Output ONLY the JSON array.
 """
 
-    log.info("CODING", f"Calling Gemini for page={page_name!r}")
-    response = client.models.generate_content(
-        model=planner_model,
-        contents=full_prompt
-    )
+    if screenshot_base64:
+        contents = [
+            {"inline_data": {"mime_type": screenshot_media_type, "data": screenshot_base64}},
+            f"This is the VISUAL REFERENCE screenshot. Study its colors, layout, sidebar, cards, topbar, typography and spacing carefully.\n\nNow generate Figma JSON elements for this frame:\n\n{text_prompt}"
+        ]
+        log.info("CODING", f"Calling Gemini with screenshot vision for page={page_name!r}")
+    else:
+        contents = [text_prompt]
+        log.info("CODING", f"Calling Gemini (text only) for page={page_name!r}")
+
+    def _blocking_gemini_call():
+        return client.models.generate_content(
+            model=planner_model,
+            contents=contents,
+        )
+
+    response = await asyncio.to_thread(_blocking_gemini_call)
     raw = response.text
     log.debug("CODING", f"Raw response: {len(raw)} chars for page={page_name!r}")
 

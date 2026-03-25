@@ -22,6 +22,7 @@ from nav_extractor import build_nav_context, get_button_route
 from component_classifier import (
     classify, is_overlay, is_inline, is_page, is_tab,
     get_render_strategy, OVERLAY_TYPES, INLINE_TYPES,
+    _to_pascal,
 )
 
 
@@ -633,7 +634,7 @@ def _render_node(
     if node_type == "rectangle":
         return _render_rectangle(node, indent, scale)
     if node_type == "text":
-        return _render_text(node, indent, scale)
+        return _render_text(node, indent, scale, all_routes, nav_context, page_name)
     if node_type == "image":
         return _render_image(node, indent, scale)
     if node_type == "button":
@@ -777,7 +778,8 @@ def _render_vector(node: dict, indent: str, scale: str = "scale") -> str:
     return f"{indent}{{/* {name} */}}\n{indent}<div style={{{{ {', '.join(sp)} }}}} />"
 
 
-def _render_text(node: dict, indent: str, scale: str = "scale") -> str:
+def _render_text(node: dict, indent: str, scale: str = "scale",
+                 all_routes: list = None, nav_context: dict = None, page_name: str = "") -> str:
     x  = node.get("x", 0);  y = node.get("y", 0);  w = node.get("width", 200)
     h  = node.get("height", 0)
     raw_text       = node.get("text", "")
@@ -788,6 +790,7 @@ def _render_text(node: dict, indent: str, scale: str = "scale") -> str:
     letter_spacing = node.get("letterSpacing", 0)
     opacity        = node.get("opacity", 1)
     text_align     = node.get("textAlign", node.get("textAlignHorizontal", "left")).lower()
+    is_nav_link    = node.get("isNavLink", False)
 
     tag = "h1" if font_size >= 64 else "h2" if font_size >= 42 else "h3" if font_size >= 28 else "h4" if font_size >= 20 else "p"
 
@@ -799,7 +802,7 @@ def _render_text(node: dict, indent: str, scale: str = "scale") -> str:
         f"fontSize: `calc({font_size}px * ${{{scale}}})`",
         f"fontWeight: {font_weight}",
         f"lineHeight: {line_height}",
-        f"margin: '0'", f"padding: '0'", f"boxSizing: 'border-box'",        
+        f"margin: '0'", f"padding: '0'", f"boxSizing: 'border-box'",
     ]
     if h: sp.append(f"maxHeight: `calc({h}px * ${{{scale}}})`")
     if color and color not in ("transparent", ""): sp.append(f"color: '{color}'")
@@ -810,9 +813,24 @@ def _render_text(node: dict, indent: str, scale: str = "scale") -> str:
     style = ", ".join(sp)
     name  = _safe_comment(node.get("name", "text"))
     inner = _render_text_content(_escape_jsx_text(raw_text))
+
+    # ── If this text node is inside a navbar, render as a nav Link ──
+    if is_nav_link:
+        node_name = node.get("name", raw_text)
+        target    = _resolve_nav(node_name, raw_text, page_name, nav_context or {}, all_routes or [])
+        nav_style = ", ".join(sp + ["cursor: 'pointer'", "textDecoration: 'none'"])
+        if target:
+            return (
+                f"{indent}{{/* {name} (nav link) */}}\n"
+                f"{indent}<Link to=\"{target}\" style={{{{ {nav_style} }}}}>{inner}</Link>"
+            )
+        else:
+            return (
+                f"{indent}{{/* {name} (nav link) */}}\n"
+                f"{indent}<span style={{{{ {nav_style} }}}} onClick={{() => {{}}}}>{inner}</span>"
+            )
+
     return f"{indent}{{/* {name} */}}\n{indent}<{tag} style={{{{ {style} }}}}>{inner}</{tag}>"
-
-
 def _render_image(node: dict, indent: str, scale: str = "scale") -> str:
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 400);  h = node.get("height", 300)
@@ -824,7 +842,7 @@ def _render_image(node: dict, indent: str, scale: str = "scale") -> str:
     opacity    = node.get("opacity", 1)
     name       = _safe_comment(node.get("name", "image"))
 
-    IMAGE_PROXY = "https://wingx-2vpp.onrender.com/api/image-proxy"
+    IMAGE_PROXY = "http://localhost:9000/api/image-proxy"
 
     if image_hash and (not src or src in ("", "PLACEHOLDER") or src.startswith("FIGMA_IMAGE:")):
         src = f"{IMAGE_PROXY}?hash={image_hash}"
@@ -966,13 +984,19 @@ def _render_container(
     opacity   = node.get("opacity", 1)
     name      = _safe_comment(node.get("name", "group"))
     node_type = node.get("type", "").lower()
-
+    node_pascal = _to_pascal(node.get("name", ""))
+    if comp_map and node_pascal in comp_map and used_components is not None:
+        used_components.add(node_pascal)
+        return (
+            f"{indent}{{/* {node_pascal} — shared component */}}\n"
+            f"{indent}<{node_pascal} />"
+        )
     is_frame_type = node_type in ("frame", "component", "instance")
     clips = is_frame_type or node.get("clipsContent", False)
 
     image_hash     = node.get("imageHash", "")
     has_image_fill = node.get("imageFill", False) and bool(image_hash)
-    IMAGE_PROXY    = "https://wingx-2vpp.onrender.com/api/image-proxy"
+    IMAGE_PROXY    = "http://localhost:9000/api/image-proxy"
 
     # ── Bug 1 fix ─────────────────────────────────────────────────
     # A FRAME/COMPONENT node in Figma defines its OWN coordinate space.

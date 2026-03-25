@@ -11,6 +11,7 @@ from typing import Optional
 from planner  import run_planner
 from coding   import generate_page_nodes
 from analyzer import run_analyze, AnalyzeRequest
+from context_builder import run_context_builder, ContextBuildRequest
 import logger as log
 
 app = FastAPI(title="Worktual AI Backend")
@@ -26,8 +27,11 @@ CHILDREN_PER_CHUNK = 8
 
 
 class PromptRequest(BaseModel):
-    prompt: str
-
+    prompt:                str
+    layout_context:        Optional[dict] = None
+    content_context:       Optional[dict] = None
+    screenshot_base64:     Optional[str]  = None
+    screenshot_media_type: Optional[str]  = "image/png"
 
 # ─────────────────────────────────────────────────────────────────
 # /  —  Health check
@@ -53,6 +57,31 @@ def get_logs(n: int = 200):
 async def analyze_file(request: AnalyzeRequest):
     return await run_analyze(request)
 
+@app.post("/analyze-context")
+async def analyze_context(request: ContextBuildRequest):
+    return await run_context_builder(request)
+
+# ─────────────────────────────────────────────────────────────────
+# /api/image-proxy  —  Proxy external images (Picsum, etc.) to Figma
+# ─────────────────────────────────────────────────────────────────
+import urllib.parse, httpx
+
+@app.get("/api/image-proxy")
+async def image_proxy(url: str = "", hash: str = ""):
+    target = url or ""
+    if not target and hash:
+        target = f"https://picsum.photos/seed/{hash[:8]}/400/300"
+    if not target:
+        raise HTTPException(status_code=400, detail="No url provided")
+    try:
+        decoded = urllib.parse.unquote(target)
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10) as cli:
+            r = await cli.get(decoded)
+            r.raise_for_status()
+            from fastapi.responses import Response
+            return Response(content=r.content, media_type=r.headers.get("content-type", "image/jpeg"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Image proxy failed: {exc}")
 
 # ─────────────────────────────────────────────────────────────────
 # /plan
@@ -73,15 +102,18 @@ async def generate(request: PromptRequest):
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
 
     log.info("GENERATE", f"Request received — prompt: {request.prompt[:80]!r}")
-
+    
     async def stream_pages():
+        import asyncio
         start = time.time()
         try:
-            # ── Planning ─────────────────────────────────────────
             yield sse("status", {"message": "Planning your design..."})
             yield sse_log(log.info("GENERATE", "Starting planner..."))
 
-            plan = await run_planner(request.prompt)
+            plan = await run_planner(
+                user_prompt=request.prompt,
+                content_context=request.content_context,
+            )
 
             yield sse_log(log.success("GENERATE",
                 f"Plan ready: {plan['project_title']!r} ({plan['total_pages']} pages)"
@@ -92,43 +124,94 @@ async def generate(request: PromptRequest):
                 "pages": [{"id": p["id"], "name": p["name"]} for p in plan["pages"]],
             })
 
-            # ── Page generation ───────────────────────────────────
-            generated = 0
-            for i, page in enumerate(plan["pages"]):
-                n     = i + 1
-                total = plan["total_pages"]
+            total = plan["total_pages"]
+            pages = plan["pages"]
 
-                yield sse("status", {
-                    "message":      f"Generating page {n}/{total}: {page['name']}...",
-                    "current_page": n,
-                    "total_pages":  total,
-                    "page_name":    page["name"],
-                })
+            yield sse("status", {
+                "message":     f"Generating all {total} frame(s) simultaneously (max 3 at once)...",
+                "total_pages": total,
+            })
+            for i, page in enumerate(pages):
                 yield sse_log(log.info("GENERATE",
-                    f"[{n}/{total}] Starting page={page['name']!r}"
+                    f"[{i+1}/{total}] Queued: {page['name']!r}"
                 ))
 
-                try:
-                    result   = await generate_page_nodes(
-                        page=page,
-                        project_title=plan["project_title"],
-                        user_prompt=request.prompt,
-                    )
-                    frame    = result["frame"]
+            # ── Queue-based streaming: render each frame as it completes ──
+            # asyncio.Queue bridges concurrent tasks → async generator yields
+            result_queue = asyncio.Queue()
+            semaphore    = asyncio.Semaphore(3)
+
+            async def _generate_one(page, index):
+                async with semaphore:
+                    log.info("GENERATE", f"Concurrent slot acquired for page={page['name']!r}")
+                    try:
+                        result = await generate_page_nodes(
+                            page=page,
+                            project_title=plan["project_title"],
+                            user_prompt=request.prompt,
+                            layout_context=request.layout_context,
+                            screenshot_base64=request.screenshot_base64,
+                            screenshot_media_type=request.screenshot_media_type or "image/png",
+                        )
+                        await result_queue.put((index, page, result, None))
+                    except Exception as exc:
+                        await result_queue.put((index, page, None, exc))
+
+            # Fire all tasks — semaphore controls max 3 in-flight
+            tasks = [
+                asyncio.create_task(_generate_one(page, i))
+                for i, page in enumerate(pages)
+            ]
+
+            # ── Ordered streaming via pending buffer ──────────────────
+            # As tasks complete they push to result_queue in any order.
+            # We hold out-of-order results in pending{} and only stream
+            # when the NEXT expected index is ready — preserving order.
+            pending      = {}   # index → (page, result, exc)
+            next_to_send = 0
+            received     = 0
+            generated    = 0
+
+            while received < total:
+                index, page, result, exc = await result_queue.get()
+                received += 1
+                pending[index] = (page, result, exc)
+
+                # Drain all consecutive ready results from the front
+                while next_to_send in pending:
+                    p, res, err = pending.pop(next_to_send)
+                    n = next_to_send + 1
+                    next_to_send += 1
+
+                    if err is not None:
+                        import traceback
+                        log.error("GENERATE", f"Page={p['name']!r} failed — {err}")
+                        yield sse_log(log.error("GENERATE", f"Page={p['name']!r} failed — {err}"))
+                        yield sse("page_error", {
+                            "page_id":     p["id"],
+                            "page_name":   p["name"],
+                            "page_number": n,
+                            "error":       str(err),
+                        })
+                        continue
+
+                    frame    = res["frame"]
                     children = frame.get("children", [])
                     chunks   = _chunk_list(children, CHILDREN_PER_CHUNK)
                     n_chunks = len(chunks)
 
                     yield sse_log(log.info("GENERATE",
-                        f"Streaming page={page['name']!r} — {len(children)} elements in {n_chunks} chunks"
+                        f"Streaming page={p['name']!r} — {len(children)} elements in {n_chunks} chunks"
                     ))
-
                     yield sse("page_start", {
-                        "page_id":        result["page_id"],
-                        "page_name":      result["page_name"],
+                        "page_id":        res["page_id"],
+                        "page_name":      res["page_name"],
                         "page_number":    n,
                         "total_pages":    total,
-                        "theme":          result["theme"],
+                        "theme": {
+                            **res["theme"],
+                            "feature_group": p.get("feature_group", res["page_name"].split("—")[0].strip()),
+                        },
                         "total_children": len(children),
                         "total_chunks":   n_chunks,
                         "frame_meta": {
@@ -144,7 +227,7 @@ async def generate(request: PromptRequest):
                         chunk_payload = json.dumps({
                             "type": "page_chunk",
                             "payload": {
-                                "page_id":      result["page_id"],
+                                "page_id":      res["page_id"],
                                 "chunk_index":  ci,
                                 "total_chunks": n_chunks,
                                 "children":     chunk,
@@ -157,40 +240,26 @@ async def generate(request: PromptRequest):
                         yield f"data: {chunk_payload}\n\n"
 
                     yield sse("page_end", {
-                        "page_id":    result["page_id"],
-                        "page_name":  result["page_name"],
+                        "page_id":     res["page_id"],
+                        "page_name":   res["page_name"],
                         "page_number": n,
                         "total_pages": total,
                     })
-
                     generated += 1
                     yield sse_log(log.success("GENERATE",
-                        f"Page={page['name']!r} fully sent ({n_chunks} chunks)"
+                        f"Page={p['name']!r} fully sent ({n_chunks} chunks)"
                     ))
-
-                except Exception as exc:
-                    import traceback
-                    traceback.print_exc()
-                    yield sse_log(log.error("GENERATE",
-                        f"Page={page['name']!r} failed — {exc}"
-                    ))
-                    yield sse("page_error", {
-                        "page_id":    page["id"],
-                        "page_name":  page["name"],
-                        "page_number": n,
-                        "error":      str(exc),
-                    })
 
             elapsed = round(time.time() - start, 1)
             yield sse_log(log.success("GENERATE",
-                f"Complete — {generated}/{plan['total_pages']} pages in {elapsed}s"
+                f"Complete — {generated}/{total} pages in {elapsed}s"
             ))
             yield sse("complete", {
                 "project_title":   plan["project_title"],
-                "total_pages":     plan["total_pages"],
+                "total_pages":     total,
                 "pages_generated": generated,
                 "generation_time": f"{elapsed}s",
-                "message": f"✅ {generated}/{plan['total_pages']} pages generated in {elapsed}s",
+                "message": f"✅ {generated}/{total} pages generated in {elapsed}s",
             })
 
         except Exception as exc:
@@ -220,7 +289,10 @@ async def generate_full(request: PromptRequest):
 
     log.info("GENERATE-FULL", f"Request — prompt: {request.prompt[:80]!r}")
     start  = time.time()
-    plan   = await run_planner(request.prompt)
+    plan   = await run_planner(
+        user_prompt=request.prompt,
+        content_context=request.content_context,
+    )
     frames = []
 
     for i, page in enumerate(plan["pages"]):
@@ -229,6 +301,9 @@ async def generate_full(request: PromptRequest):
                 page=page,
                 project_title=plan["project_title"],
                 user_prompt=request.prompt,
+                layout_context=request.layout_context,
+                screenshot_base64=request.screenshot_base64,
+                screenshot_media_type=request.screenshot_media_type or "image/png",
             )
             frames.append(result["frame"])
             log.success("GENERATE-FULL",
@@ -560,65 +635,6 @@ def _summarise_frame(frame: dict) -> dict:
     return clean(frame)
 
 
-# async def _ai_write_page(component_name: str, route_path: str,
-#                           all_routes: list[dict], frame: dict,
-#                           project_title: str,
-#                           nav_block: str = "") -> str:
-#     from coding import client as gemini_client
-
-#     route_summary = [{"page": r.get("page_name") or r.get("component",""), "route": r.get("route_path") or r.get("path","/") } for r in all_routes]
-#     cleaned_frame = _summarise_frame(frame)
-#     model         = os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.0-flash")
-
-#     # Inject actual frame dimensions into prompt so LLM uses correct values
-#     frame_w = cleaned_frame.get("width",  1440)
-#     frame_h = cleaned_frame.get("height", 900)
-
-#     log.info("EXPORT", f"Writing component={component_name!r}  route={route_path!r}  size={frame_w}x{frame_h}")
-
-#     prompt = (
-#         f"{REACT_SYSTEM_PROMPT}\n\n"
-#         f"PROJECT: {project_title}\n"
-#         f"COMPONENT NAME: {component_name}\n"
-#         f"THIS PAGE ROUTE: {route_path}\n"
-#         f"FRAME DIMENSIONS: width={frame_w}px  height={frame_h}px  ← use these for FRAME_W and FRAME_H\n"
-#         f"ALL ROUTES: {json.dumps(route_summary)}\n\n"
-#         + (f"{nav_block}\n\n" if nav_block else "")
-#         + f"FIGMA NODE TREE:\n"
-#         f"{json.dumps(cleaned_frame, separators=(',', ':'))}"
-#     )
-
-#     response = gemini_client.models.generate_content(
-#         model=model,
-#         contents=prompt,
-#         config={"temperature": 0.1},
-#     )
-#     raw = response.text.strip()
-#     raw = re.sub(r"^```(?:jsx?|javascript|typescript|tsx?)?\s*\n?", "", raw, flags=re.MULTILINE)
-#     raw = re.sub(r"\n?```\s*$", "", raw.strip()).strip()
-
-#     # Hard fix: all asset images must be .png
-#     raw = re.sub(
-#         r'(/assets/images/[\w\-. ]+?)\.svg(["\'\\s)])',
-#         r'\1.png\2',
-#         raw
-#     )
-
-#     # Hard fix: ensure applyScale pattern is present if LLM forgot it
-#     if "__page_frame__" not in raw and "export default function" in raw:
-#         log.warn("EXPORT", f"Component={component_name!r} missing __page_frame__ — LLM ignored scaling pattern")
-
-#     if not raw.endswith(("}", "};", ");")):
-#         open_divs  = raw.count("<div") + raw.count("<section") + raw.count("<nav") + raw.count("<footer")
-#         close_divs = raw.count("</div>") + raw.count("</section>") + raw.count("</nav>") + raw.count("</footer>")
-#         missing    = open_divs - close_divs
-#         if missing > 0:
-#             raw += "\n" + ("</div>\n" * missing)
-#         if "export default function" in raw and not raw.rstrip().endswith("}"):
-#             raw += "\n}\n"
-
-#     log.success("EXPORT", f"Component={component_name!r} done ({len(raw)} chars)")
-#     return raw
 
 async def _ai_write_page(component_name: str, route_path: str,
                           all_routes: list[dict], frame: dict,

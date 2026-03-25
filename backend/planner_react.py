@@ -26,7 +26,7 @@ import logger as log
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY1"))
 MODEL  = os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.0-flash")
 
 
