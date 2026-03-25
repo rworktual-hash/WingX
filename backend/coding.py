@@ -15,7 +15,7 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY1"))
 
 IMAGE_PROXY_BASE = os.getenv(
     "IMAGE_PROXY_BASE",
-    "http://localhost:9000/api/image-proxy"
+    "https://wingx-2vpp.onrender.com/api/image-proxy"
 )
 
 # ─────────────────────────────────────────────────────────────────
