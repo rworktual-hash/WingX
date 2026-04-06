@@ -6,6 +6,7 @@ from google import genai
 from dotenv import load_dotenv
 
 from themes import select_themes_for_prompt
+from llm_utils import generate_content_with_retry
 import logger as log
 
 load_dotenv()
@@ -15,7 +16,7 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY1"))
 
 IMAGE_PROXY_BASE = os.getenv(
     "IMAGE_PROXY_BASE",
-    "https://wingx-2vpp.onrender.com/api/image-proxy"
+    "http://localhost:9000/api/image-proxy"
 )
 
 # ─────────────────────────────────────────────────────────────────
@@ -27,6 +28,7 @@ You are a senior UI/UX designer generating a professional Figma page layout.
 Your task is to generate a JSON array of UI elements that will become the "children" of ONE tall Figma frame representing a full webpage.
 
 The layout must resemble a modern, real production website.
+It may also represent a real product screen, dashboard, CRM, inbox, modal, or application view.
 
 ════════════════════════════════════════
 OUTPUT RULES
@@ -59,9 +61,13 @@ Left padding = 120px
 Right padding = 120px
 
 Primary content width:
-max ≈ 1200px
+- Landing pages / marketing sites: max ≈ 1200px
+- Product screens / dashboards / CRMs / inbox views: use most of the frame width with realistic app gutters
 
 All elements must stay inside the frame width.
+Do NOT shrink a full app screen into a tiny centered layout.
+If the screenshot includes empty space around the UI, ignore that padding and recreate the actual site/app surface at full size.
+Never reproduce screenshot chrome, capture background, editor canvas, or outer framing that sits outside the real product UI.
 
 ════════════════════════════════════════
 VERTICAL SPACING SYSTEM
@@ -163,19 +169,14 @@ GROUP — related elements like nav links, skill tags, icon rows:
 
 
 ════════════════════════════════════════
-WEBSITE STRUCTURE REQUIREMENTS
+STRUCTURE REQUIREMENTS
 ════════════════════════════════════════
 
-Generate a realistic landing page with sections such as:
+Generate the structure that matches the planned frame.
 
-1. Navbar
-2. Hero section
-3. Features / services
-4. About / product explanation
-5. Feature cards or product showcase
-6. Testimonials or statistics
-7. Call-to-action section
-8. Footer
+- If the frame is a landing page or marketing website, use the appropriate website sections.
+- If the frame is a dashboard / CRM / inbox / product screen, generate a full-fidelity application layout instead.
+- Follow the frame description exactly instead of defaulting to a landing page.
 
 ════════════════════════════════════════
 NAVBAR DESIGN
@@ -269,7 +270,22 @@ letterSpacing 2
 IMAGE RULES
 ════════════════════════════════════════
 
-All images must include:
+Only use `image` elements for REAL content imagery such as:
+- hero/product illustrations
+- marketing banners
+- article/gallery thumbnails
+- full profile photos when the design clearly uses real photos
+
+Do NOT use `image` elements for:
+- icons
+- SVG-like UI symbols
+- mic / phone / speaker / trash / edit / menu / search / bell / close controls
+- tiny visuals inside buttons
+- badges
+- avatars that can be initials
+- logos that can be rendered as text or simple shapes
+
+All real content images must include:
 
 src: "PLACEHOLDER"
 
@@ -300,6 +316,14 @@ opacity ≈ 0.2
 DESIGN QUALITY REQUIREMENTS:
 ══════════════════════════════════════════
 - Use the provided theme colors throughout: background, surfaces, accent, text
+- Respect the screenshot/reference proportions and overall scale
+- Ignore screenshot capture padding or blank margins around the real UI
+- Recreate the actual UI surface so it fills the frame naturally
+- For product screens, use realistic outer gutters (roughly 24-48px), not huge empty margins
+- Never compress a product screen into a tiny centered website
+- Treat the project like one connected product system, not a set of unrelated screens
+- Keep shared navigation destinations, ordering, and shell structure consistent across related frames
+- If a modal/menu/drawer/popover is open, preserve the same underlying base screen shell from the parent state
 - Typography hierarchy:
     Hero heading:  fontSize 72–96, fontWeight "bold", lineHeight 1.0–1.15
     Section title: fontSize 42–56, fontWeight "bold"
@@ -315,6 +339,16 @@ DESIGN QUALITY REQUIREMENTS:
 - All coordinates MUST be inside the frame (0 to frame width, 0 to frame height)
 - Include REALISTIC content for the project domain — real names, descriptions, copy
 - Make it look like a professional real website, not a wireframe
+- TEXT FIT RULES:
+    - Do not create text boxes so narrow that ordinary labels or sentences break awkwardly
+    - Expand text widths or surrounding containers so text does not collide with nearby elements
+    - Short labels, tabs, buttons, chips, table cells, and names should stay on one line whenever reasonably possible
+    - If a paragraph wraps, ensure its container height and the spacing below it prevent overlap
+- ASSET FIT RULES:
+    - Tiny UI visuals should be rendered as shapes/text/icon-like elements, not external images
+    - Use images only when the element is clearly content media, not a control
+    - Never use meaningless placeholder labels like P1, C2, IMG, or random initials for icons
+    - Utility controls should use simple vector-like icon groups or compact semantic labels
 """
 
 
@@ -363,6 +397,589 @@ def inject_image_urls(children: list) -> list:
     return children
 
 
+ICON_KEYWORDS = {
+    "mic", "microphone", "speaker", "call", "phone", "trash", "delete", "edit",
+    "transfer", "search", "notification", "bell", "menu", "kebab", "more",
+    "close", "mute", "unmute", "hold", "resume", "voicemail", "play", "pause",
+    "arrow", "chevron", "caret", "download", "upload", "filter", "sort", "note",
+    "settings", "gear", "avatar", "profile", "user", "icon", "svg", "badge",
+    "toggle", "tab", "dots", "ellipsis", "logo",
+}
+REAL_IMAGE_HINTS = {
+    "photo", "hero", "banner", "thumbnail", "cover", "illustration", "gallery",
+    "screenshot", "product image", "product shot", "product", "item image",
+    "team", "workspace", "device", "laptop", "headphones", "camera",
+}
+ICON_LABEL_MAP = {
+    "search": "SRCH",
+    "menu": "...",
+    "kebab": "...",
+    "more": "...",
+    "close": "X",
+    "delete": "DEL",
+    "trash": "DEL",
+    "edit": "EDIT",
+    "note": "NOTE",
+    "call": "TEL",
+    "phone": "TEL",
+    "mic": "MIC",
+    "speaker": "SPK",
+    "transfer": "TRF",
+    "filter": "FLT",
+    "sort": "SORT",
+    "play": "PLAY",
+    "pause": "II",
+    "download": "DL",
+    "upload": "UL",
+    "hold": "HOLD",
+    "resume": "GO",
+    "bell": "BELL",
+    "notification": "BELL",
+    "settings": "CFG",
+    "gear": "CFG",
+}
+
+
+def _ascii_initials(text: str, limit: int = 2) -> str:
+    parts = re.findall(r"[A-Za-z0-9]+", text or "")
+    if not parts:
+        return "UI"
+    initials = "".join(p[0].upper() for p in parts[:limit])
+    return initials or "UI"
+
+
+def _infer_asset_kind(el: dict) -> str:
+    name = (el.get("name") or "")
+    keyword = (el.get("imageKeyword") or "")
+    hay = f"{name} {keyword}".lower()
+    w = int(el.get("width", 0) or 0)
+    h = int(el.get("height", 0) or 0)
+    small = max(w, h) <= 96 or (w * h) <= 12000
+
+    if any(k in hay for k in ["avatar", "profile", "user photo", "customer photo"]):
+        return "avatar"
+    if any(k in hay for k in ["logo", "brand"]):
+        return "logo"
+    if any(k in hay for k in REAL_IMAGE_HINTS) and (not small or min(w, h) >= 72):
+        return "content"
+    if any(k in hay for k in ICON_KEYWORDS) or small:
+        return "icon"
+    return "content"
+
+
+def _icon_keyword(hay: str) -> str:
+    ordered = [
+        "search", "menu", "kebab", "more", "close", "delete", "trash", "edit",
+        "note", "call", "phone", "mic", "speaker", "transfer", "filter", "sort",
+        "play", "pause", "download", "upload", "hold", "resume", "bell",
+        "notification", "settings", "gear", "chevron", "arrow", "back", "next",
+    ]
+    for key in ordered:
+        if key in hay:
+            return key
+    return ""
+
+
+def _base_icon_children(x: int, y: int, w: int, h: int, bg: str) -> list[dict]:
+    return [{
+        "type": "rectangle",
+        "name": "Icon BG",
+        "x": x,
+        "y": y,
+        "width": w,
+        "height": h,
+        "backgroundColor": bg,
+        "cornerRadius": min(12, max(6, min(w, h) // 3)),
+    }]
+
+
+def _make_icon_group(el: dict) -> dict:
+    x = int(el.get("x", 0) or 0)
+    y = int(el.get("y", 0) or 0)
+    w = max(20, int(el.get("width", 24) or 24))
+    h = max(20, int(el.get("height", 24) or 24))
+    hay = f"{el.get('name', '')} {el.get('imageKeyword', '')}".lower()
+    kind = _icon_keyword(hay)
+    bg = "#EEF2FF" if max(w, h) <= 40 else "#E5E7EB"
+    fg = "#4F46E5" if max(w, h) <= 40 else "#374151"
+    inset = max(4, min(w, h) // 5)
+    mid_x = x + (w // 2)
+    mid_y = y + (h // 2)
+    children = _base_icon_children(x, y, w, h, bg)
+
+    if kind in {"menu", "kebab", "more"}:
+        dot = max(3, min(5, min(w, h) // 5))
+        gap = max(dot + 2, w // 4)
+        start_x = mid_x - gap
+        for i in range(3):
+            children.append({
+                "type": "ellipse",
+                "name": "Menu Dot",
+                "x": start_x + i * gap,
+                "y": mid_y - dot // 2,
+                "width": dot,
+                "height": dot,
+                "backgroundColor": fg,
+            })
+    elif kind == "search":
+        circle = min(w, h) - inset * 2 - 4
+        children.extend([
+            {
+                "type": "ellipse",
+                "name": "Search Ring",
+                "x": x + inset,
+                "y": y + inset,
+                "width": max(10, circle),
+                "height": max(10, circle),
+                "backgroundColor": "transparent",
+                "borderColor": fg,
+                "borderWidth": 2,
+            },
+            {
+                "type": "line",
+                "name": "Search Handle",
+                "x": x + inset + circle - 2,
+                "y": y + inset + circle - 1,
+                "width": max(8, w // 4),
+                "color": fg,
+                "strokeWeight": 2,
+                "rotation": 42,
+            },
+        ])
+    elif kind == "close":
+        children.extend([
+            {
+                "type": "line",
+                "name": "Close Slash 1",
+                "x": x + inset,
+                "y": y + inset,
+                "width": max(10, w - inset * 2),
+                "color": fg,
+                "strokeWeight": 2,
+                "rotation": 45,
+            },
+            {
+                "type": "line",
+                "name": "Close Slash 2",
+                "x": x + inset,
+                "y": y + h - inset,
+                "width": max(10, w - inset * 2),
+                "color": fg,
+                "strokeWeight": 2,
+                "rotation": -45,
+            },
+        ])
+    elif kind in {"delete", "trash"}:
+        body_w = max(10, w - inset * 2)
+        body_h = max(10, h - inset * 2 - 4)
+        children.extend([
+            {
+                "type": "rectangle",
+                "name": "Trash Body",
+                "x": x + inset,
+                "y": y + inset + 4,
+                "width": body_w,
+                "height": body_h,
+                "backgroundColor": "transparent",
+                "borderColor": fg,
+                "borderWidth": 2,
+                "cornerRadius": 4,
+            },
+            {
+                "type": "line",
+                "name": "Trash Lid",
+                "x": x + inset - 1,
+                "y": y + inset + 2,
+                "width": body_w + 2,
+                "color": fg,
+                "strokeWeight": 2,
+            },
+            {
+                "type": "line",
+                "name": "Trash Handle",
+                "x": mid_x - 4,
+                "y": y + inset - 1,
+                "width": 8,
+                "color": fg,
+                "strokeWeight": 2,
+            },
+        ])
+    elif kind == "mic":
+        children.extend([
+            {
+                "type": "ellipse",
+                "name": "Mic Head",
+                "x": mid_x - max(4, w // 8),
+                "y": y + inset,
+                "width": max(8, w // 4),
+                "height": max(10, h // 3),
+                "backgroundColor": "transparent",
+                "borderColor": fg,
+                "borderWidth": 2,
+            },
+            {
+                "type": "line",
+                "name": "Mic Stem",
+                "x": mid_x,
+                "y": y + inset + max(10, h // 3),
+                "width": max(8, h // 5),
+                "color": fg,
+                "strokeWeight": 2,
+                "rotation": 90,
+            },
+            {
+                "type": "line",
+                "name": "Mic Base",
+                "x": mid_x - max(6, w // 5),
+                "y": y + h - inset - 4,
+                "width": max(12, w // 2),
+                "color": fg,
+                "strokeWeight": 2,
+            },
+        ])
+    elif kind == "speaker":
+        children.extend([
+            {
+                "type": "rectangle",
+                "name": "Speaker Body",
+                "x": x + inset,
+                "y": mid_y - max(5, h // 6),
+                "width": max(6, w // 5),
+                "height": max(10, h // 3),
+                "backgroundColor": fg,
+                "cornerRadius": 2,
+            },
+            {
+                "type": "line",
+                "name": "Speaker Wave 1",
+                "x": x + inset + max(8, w // 4),
+                "y": mid_y - max(6, h // 5),
+                "width": max(8, w // 4),
+                "color": fg,
+                "strokeWeight": 2,
+                "rotation": 55,
+            },
+            {
+                "type": "line",
+                "name": "Speaker Wave 2",
+                "x": x + inset + max(8, w // 4),
+                "y": mid_y + max(3, h // 10),
+                "width": max(8, w // 4),
+                "color": fg,
+                "strokeWeight": 2,
+                "rotation": -55,
+            },
+        ])
+    elif kind in {"filter", "sort"}:
+        widths = [w - inset * 2, max(10, w - inset * 2 - 6), max(8, w - inset * 2 - 12)]
+        for idx, line_w in enumerate(widths):
+            children.append({
+                "type": "line",
+                "name": "Filter Line",
+                "x": x + inset + idx * 2,
+                "y": y + inset + idx * max(5, h // 5),
+                "width": line_w,
+                "color": fg,
+                "strokeWeight": 2,
+            })
+    elif kind in {"edit", "note"}:
+        children.extend([
+            {
+                "type": "line",
+                "name": "Pencil",
+                "x": x + inset,
+                "y": y + h - inset - 4,
+                "width": max(12, w - inset * 2),
+                "color": fg,
+                "strokeWeight": 3,
+                "rotation": -35,
+            },
+            {
+                "type": "rectangle",
+                "name": "Edit Tip",
+                "x": x + w - inset - 6,
+                "y": y + inset + 4,
+                "width": 6,
+                "height": 6,
+                "backgroundColor": fg,
+                "cornerRadius": 2,
+            },
+        ])
+    else:
+        label = ICON_LABEL_MAP.get(kind or "", _ascii_initials((el.get("name") or el.get("imageKeyword") or "icon"), 3))
+        children.append({
+            "type": "text",
+            "name": (el.get("name") or "Icon") + " Label",
+            "x": x + max(4, w // 6),
+            "y": y + max(4, h // 5),
+            "width": max(12, w - max(8, w // 3)),
+            "text": label,
+            "fontSize": max(9, min(13, int(min(w, h) * 0.34))),
+            "fontWeight": "bold",
+            "color": fg,
+            "lineHeight": 1.0,
+            "letterSpacing": 0,
+        })
+
+    return {
+        "type": "group",
+        "name": (el.get("name") or "UI Icon") + " Group",
+        "x": x,
+        "y": y,
+        "children": children
+    }
+
+
+def _make_avatar_group(el: dict) -> dict:
+    x = int(el.get("x", 0) or 0)
+    y = int(el.get("y", 0) or 0)
+    size = max(24, min(64, int(max(el.get("width", 40) or 40, el.get("height", 40) or 40))))
+    initials = _ascii_initials(el.get("name") or el.get("imageKeyword") or "User", 2)
+    return {
+        "type": "group",
+        "name": (el.get("name") or "Avatar") + " Group",
+        "x": x,
+        "y": y,
+        "children": [
+            {
+                "type": "ellipse",
+                "name": (el.get("name") or "Avatar") + " Circle",
+                "x": x,
+                "y": y,
+                "width": size,
+                "height": size,
+                "backgroundColor": "#6366F1",
+            },
+            {
+                "type": "text",
+                "name": (el.get("name") or "Avatar") + " Initials",
+                "x": x + max(6, size // 4),
+                "y": y + max(5, size // 4),
+                "width": max(14, size - max(12, size // 2)),
+                "text": initials,
+                "fontSize": max(10, min(16, int(size * 0.34))),
+                "fontWeight": "bold",
+                "color": "#FFFFFF",
+                "lineHeight": 1.0,
+                "letterSpacing": 0,
+            }
+        ]
+    }
+
+
+def _make_logo_group(el: dict) -> dict:
+    x = int(el.get("x", 0) or 0)
+    y = int(el.get("y", 0) or 0)
+    w = max(48, int(el.get("width", 96) or 96))
+    h = max(24, int(el.get("height", 32) or 32))
+    label = _ascii_initials(el.get("name") or el.get("imageKeyword") or "Logo", 3)
+    return {
+        "type": "group",
+        "name": (el.get("name") or "Logo") + " Group",
+        "x": x,
+        "y": y,
+        "children": [
+            {
+                "type": "rectangle",
+                "name": (el.get("name") or "Logo") + " BG",
+                "x": x,
+                "y": y,
+                "width": h,
+                "height": h,
+                "backgroundColor": "#111827",
+                "cornerRadius": 8,
+            },
+            {
+                "type": "text",
+                "name": (el.get("name") or "Logo") + " Mark",
+                "x": x + max(5, h // 5),
+                "y": y + max(4, h // 5),
+                "width": max(12, h - max(8, h // 3)),
+                "text": label[:2],
+                "fontSize": max(10, min(14, int(h * 0.38))),
+                "fontWeight": "bold",
+                "color": "#FFFFFF",
+                "lineHeight": 1.0,
+                "letterSpacing": 0,
+            },
+            {
+                "type": "text",
+                "name": (el.get("name") or "Logo") + " Text",
+                "x": x + h + 8,
+                "y": y + max(3, h // 6),
+                "width": max(24, w - h - 8),
+                "text": _pretty_logo_text(el.get("name") or el.get("imageKeyword") or "Brand"),
+                "fontSize": max(11, min(16, int(h * 0.42))),
+                "fontWeight": "semibold",
+                "color": "#111827",
+                "lineHeight": 1.0,
+                "letterSpacing": 0,
+            },
+        ]
+    }
+
+
+def _pretty_logo_text(text: str) -> str:
+    parts = re.findall(r"[A-Za-z0-9]+", text or "")
+    if not parts:
+        return "Brand"
+    return " ".join(p[:1].upper() + p[1:] for p in parts[:2])
+
+
+def _build_navigation_block(page: dict) -> str:
+    nav = page.get("project_navigation") or page.get("navigation") or {}
+    primary = nav.get("primary_links", []) or []
+    active = (page.get("navigation") or {}).get("active_label", "")
+    layout = nav.get("layout", "topbar")
+    if not primary:
+        return ""
+
+    nav_order = " | ".join(primary)
+    placement = (
+        "Render this as one horizontal top navigation row."
+        if layout == "topbar"
+        else "Keep the navigation placement consistent with the shared product shell."
+    )
+    return (
+        f"\nPROJECT NAVIGATION SYSTEM:\n"
+        f"  Shared nav layout: {layout}\n"
+        f"  Stable primary destinations: {nav_order}\n"
+        f"  Required primary link count: {len(primary)}\n"
+        f"  Active destination for this frame: {active or primary[0]}\n"
+        f"  {placement}\n"
+        f"  Render all primary destinations on every relevant page in this same order.\n"
+        f"  Keep the same destination labels and ordering across related screens.\n"
+        f"  Do not invent extra top-level nav items or switch to a different IA unless the reference clearly requires it.\n"
+    )
+
+
+def _build_journey_block(page: dict) -> str:
+    journey = page.get("journey") or {}
+    prev_screen = journey.get("previous_screen", "")
+    next_screen = journey.get("next_screen", "")
+    branch_root = journey.get("branch_root", "") or page.get("branch_root", "")
+    branch_trigger = journey.get("branch_trigger", "") or page.get("branch_trigger", "")
+    branch_goal = journey.get("branch_goal", "") or page.get("branch_goal", "")
+    branch_kind = journey.get("branch_kind", "") or page.get("branch_kind", "")
+    if not prev_screen and not next_screen:
+        return ""
+    return (
+        f"\nFLOW CONTEXT:\n"
+        f"  Flow row: {page.get('flow_group', page.get('feature_group', ''))}\n"
+        f"  Current step: {page.get('flow_group_step', page.get('flow_step', ''))} of {page.get('flow_group_total', page.get('flow_total', ''))}\n"
+        f"  Branch root: {branch_root or page.get('feature_group', '')}\n"
+        f"  Branch trigger: {branch_trigger or 'None'}\n"
+        f"  Branch goal: {branch_goal or 'None'}\n"
+        f"  Branch kind: {branch_kind or 'flow'}\n"
+        f"  Previous screen: {prev_screen or 'None'}\n"
+        f"  Next screen: {next_screen or 'None'}\n"
+        f"  Preserve the same shell and include the trigger that naturally leads to the next screen when appropriate.\n"
+    )
+
+
+def _build_memory_block(page: dict) -> str:
+    memory = page.get("memory_context") or {}
+    if not memory:
+        return ""
+
+    preferred_theme = memory.get("preferred_theme") or {}
+    pages = memory.get("pages", []) or []
+    nav_model = memory.get("navigation_model") or {}
+    page_lines = []
+    for item in pages[:12]:
+        if not isinstance(item, dict):
+            continue
+        line = " | ".join([part for part in [
+            item.get("screen_title") or item.get("name") or "Screen",
+            item.get("feature_group") or "",
+            item.get("flow_group") or "",
+        ] if part])
+        if line:
+            page_lines.append("  - " + line)
+
+    memory_lines = []
+    if preferred_theme:
+        memory_lines.append(
+            "  Preferred theme: " +
+            str(preferred_theme.get("name", "")) +
+            (" | colors: " + ", ".join(preferred_theme.get("colors", [])[:5]) if preferred_theme.get("colors") else "")
+        )
+    if nav_model.get("primary_links"):
+        memory_lines.append(
+            "  Shared nav: " + ", ".join(nav_model.get("primary_links", [])[:10]) +
+            f" | layout={nav_model.get('layout', '')}"
+        )
+    if page.get("followup_source_frame_name"):
+        memory_lines.append("  Source frame: " + str(page.get("followup_source_frame_name")))
+    if page.get("branch_trigger"):
+        memory_lines.append("  Trigger element: " + str(page.get("branch_trigger")))
+    if page_lines:
+        memory_lines.append("  Existing screens:")
+        memory_lines.extend(page_lines)
+
+    if not memory_lines:
+        return ""
+    return "\nPROJECT MEMORY:\n" + "\n".join(memory_lines) + "\n"
+
+
+def stabilize_generated_children(children: list) -> list:
+    stabilized = []
+    for el in children:
+        if not isinstance(el, dict):
+            continue
+
+        updated = dict(el)
+        if updated.get("type") == "group" and isinstance(updated.get("children"), list):
+            updated["children"] = stabilize_generated_children(updated["children"])
+
+        if updated.get("type") == "text":
+            text_value = str(updated.get("text", "") or "")
+            font_size = int(updated.get("fontSize", 16) or 16)
+            width = int(updated.get("width", 0) or 0)
+            approx_width = int(len(text_value.strip()) * max(7, font_size * 0.52))
+            if width and text_value.strip() and "\n" not in text_value:
+                if len(text_value) <= 28 and width < approx_width:
+                    updated["width"] = min(max(width, approx_width + 12), 520)
+                elif len(text_value) > 28 and width < int(approx_width * 0.72):
+                    updated["width"] = min(max(width, int(approx_width * 0.72) + 16), 640)
+
+        if updated.get("type") == "button":
+            text_value = str(updated.get("text", "") or "")
+            width = int(updated.get("width", 0) or 0)
+            font_size = int(updated.get("fontSize", 16) or 16)
+            approx_width = int(len(text_value.strip()) * max(7, font_size * 0.55)) + 36
+            if width and text_value.strip() and width < approx_width:
+                updated["width"] = min(max(width, approx_width), 360)
+
+        stabilized.append(updated)
+    return stabilized
+
+
+def sanitize_generated_children(children: list) -> list:
+    sanitized = []
+    for el in children:
+        if not isinstance(el, dict):
+            continue
+
+        if el.get("type") == "group" and isinstance(el.get("children"), list):
+            el = {**el, "children": sanitize_generated_children(el["children"])}
+
+        if el.get("type") == "image":
+            kind = _infer_asset_kind(el)
+            if kind == "icon":
+                sanitized.append(_make_icon_group(el))
+                continue
+            if kind == "avatar":
+                sanitized.append(_make_avatar_group(el))
+                continue
+            if kind == "logo":
+                sanitized.append(_make_logo_group(el))
+                continue
+
+        sanitized.append(el)
+    return sanitized
+
+
 def clean_json_response(raw: str) -> str:
     cleaned = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
     start   = cleaned.find('[')
@@ -370,6 +987,50 @@ def clean_json_response(raw: str) -> str:
     if start != -1 and end != -1:
         return cleaned[start:end + 1]
     return cleaned
+
+
+def _repair_json_control_chars(text: str) -> str:
+    out = []
+    in_string = False
+    escape = False
+
+    for ch in text:
+        if in_string:
+            if escape:
+                out.append(ch)
+                escape = False
+                continue
+            if ch == "\\":
+                out.append(ch)
+                escape = True
+                continue
+            if ch == "\"":
+                out.append(ch)
+                in_string = False
+                continue
+            if ch == "\n":
+                out.append("\\n")
+                continue
+            if ch == "\r":
+                out.append("\\r")
+                continue
+            if ch == "\t":
+                out.append("\\t")
+                continue
+            code = ord(ch)
+            if code < 32:
+                out.append(" ")
+                continue
+            out.append(ch)
+            continue
+
+        if ch == "\"":
+            in_string = True
+        out.append(ch)
+
+    repaired = "".join(out)
+    repaired = re.sub(r",(\s*[\]}])", r"\1", repaired)
+    return repaired
 
 
 def parse_coding_response(raw: str, page_name: str) -> list:
@@ -380,6 +1041,16 @@ def parse_coding_response(raw: str, page_name: str) -> list:
             raise ValueError("Response must be a JSON array")
         return children
     except json.JSONDecodeError as e:
+        repaired = _repair_json_control_chars(cleaned)
+        if repaired != cleaned:
+            try:
+                children = json.loads(repaired)
+                if not isinstance(children, list):
+                    raise ValueError("Response must be a JSON array")
+                log.warn("CODING", f"Recovered malformed JSON for page={page_name!r} via control-char repair")
+                return children
+            except json.JSONDecodeError:
+                pass
         raise ValueError(f"Invalid JSON for '{page_name}': {e}\n\nRaw:\n{raw[:800]}")
 
 
@@ -393,11 +1064,32 @@ async def generate_page_nodes(page: dict, project_title: str, user_prompt: str, 
     page_height = page.get("height", 3200)
     page_desc   = page.get("description", page_name)
     images      = page.get("images", [])
+    memory_context = page.get("memory_context") or {}
 
     log.info("CODING", f"Generating page={page_name!r}  size={page_width}×{page_height}")
 
     # ── Select theme — prefer layout_context from screenshot ──────
-    if layout_context and layout_context.get("color_palette"):
+    if memory_context.get("preferred_theme") and not (layout_context and layout_context.get("color_palette")):
+        preferred_theme = memory_context.get("preferred_theme") or {}
+        preferred_colors = list(preferred_theme.get("colors", []) or [])
+        if len(preferred_colors) < 5:
+            fallback_colors = ["#111111", "#1A1A1A", "#4F46E5", "#818CF8", "#FFFFFF"]
+            for color in fallback_colors:
+                if len(preferred_colors) >= 5:
+                    break
+                preferred_colors.append(color)
+        selected_theme = {
+            "name": preferred_theme.get("name", "Project Memory Theme"),
+            "category": "memory",
+            "colors": preferred_colors,
+            "animation": preferred_theme.get("animation", "fade"),
+            "description": "Theme inherited from previously generated project memory",
+        }
+        theme_block = build_theme_block(selected_theme)
+        bg_color = selected_theme["colors"][0]
+        log.info("CODING", f"Theme inherited from memory: {selected_theme['name']!r}")
+
+    elif layout_context and layout_context.get("color_palette"):
         # Screenshot was provided — build theme directly from extracted visual style
         raw_palette   = layout_context.get("color_palette", "")
         visual_style  = layout_context.get("visual_style", "")
@@ -490,6 +1182,12 @@ async def generate_page_nodes(page: dict, project_title: str, user_prompt: str, 
             f"  CRITICAL: Your output must visually match this reference style.\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         )
+        if layout_context.get("detected_components"):
+            component_text = ", ".join(layout_context.get("detected_components", []))
+            visual_ref_block += (
+                f"  Keep the shell/navigation pattern consistent with these detected components: {component_text}\n"
+                f"  Do not arbitrarily switch between top nav and left sidebar across related screens.\n"
+            )
 
     # ── UI state context block (state-per-frame mode) ─────────────
     ui_state_block = ""
@@ -501,6 +1199,46 @@ async def generate_page_nodes(page: dict, project_title: str, user_prompt: str, 
             f"  This frame shows ONE specific UI moment. Render exactly this state.\n"
         )
 
+    navigation_block = _build_navigation_block(page)
+    journey_block = _build_journey_block(page)
+    memory_block = _build_memory_block(page)
+
+    is_product_ui = bool(
+        page.get("feature_group") or
+        page.get("ui_state") or
+        (layout_context and layout_context.get("layout_type") in ["product_screen", "dashboard", "crm", "ecommerce"])
+    )
+
+    if is_product_ui:
+        layout_fit_block = (
+            f"\nAPP VIEWPORT FIT RULES:\n"
+            f"  This frame is a full product/application screen, not a small website mockup.\n"
+            f"  Fill most of the 1440px frame with the actual UI surface.\n"
+            f"  Keep app gutters tight and realistic, usually around 16-32px.\n"
+            f"  Do NOT preserve blank screenshot margins or browser capture whitespace around the app.\n"
+            f"  Do NOT render an extra gray canvas, outer border, or screenshot frame around the interface.\n"
+            f"  Sidebars, tables, lists, detail panels, cards, modals, and toolbars must be generously sized, not compressed.\n"
+        )
+    else:
+        layout_fit_block = (
+            f"\nPAGE FIT RULES:\n"
+            f"  Use the frame width confidently and avoid unnecessary empty margins.\n"
+            f"  Ignore any screenshot whitespace that is outside the real website content area.\n"
+        )
+
+    screenshot_guidance_block = ""
+    if layout_context and (
+        layout_context.get("outer_padding_present") or
+        layout_context.get("viewport_fill_guidance")
+    ):
+        screenshot_guidance_block = (
+            f"\nSCREENSHOT FIT GUIDANCE:\n"
+            f"  outer_padding_present: {layout_context.get('outer_padding_present', False)}\n"
+            f"  guidance: {layout_context.get('viewport_fill_guidance', '')}\n"
+            f"  IMPORTANT: treat any surrounding screenshot whitespace as capture padding, not as part of the UI layout.\n"
+            f"  Reconstruct the actual app bounds only. The final frame should show the product UI itself, not the screenshot container.\n"
+        )
+
     text_prompt = f"""{CODING_SYSTEM_PROMPT}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -510,6 +1248,11 @@ USER REQUEST: {user_prompt}
 {visual_ref_block}
 {theme_block}
 {ui_state_block}
+{navigation_block}
+{journey_block}
+{memory_block}
+{layout_fit_block}
+{screenshot_guidance_block}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FRAME TO GENERATE:
   name:        {page_name}
@@ -533,24 +1276,30 @@ Generate the children array now. Output ONLY the JSON array.
     if screenshot_base64:
         contents = [
             {"inline_data": {"mime_type": screenshot_media_type, "data": screenshot_base64}},
-            f"This is the VISUAL REFERENCE screenshot. Study its colors, layout, sidebar, cards, topbar, typography and spacing carefully.\n\nNow generate Figma JSON elements for this frame:\n\n{text_prompt}"
+            f"This is the VISUAL REFERENCE screenshot. It may already be cropped to the real UI bounds.\n"
+            f"Study its colors, layout, sidebar, cards, topbar, typography and spacing carefully.\n"
+            f"Do not recreate screenshot whitespace, editor canvas, or outer framing beyond the actual product surface.\n\n"
+            f"Now generate Figma JSON elements for this frame:\n\n{text_prompt}"
         ]
         log.info("CODING", f"Calling Gemini with screenshot vision for page={page_name!r}")
     else:
         contents = [text_prompt]
         log.info("CODING", f"Calling Gemini (text only) for page={page_name!r}")
 
-    def _blocking_gemini_call():
-        return client.models.generate_content(
-            model=planner_model,
-            contents=contents,
-        )
-
-    response = await asyncio.to_thread(_blocking_gemini_call)
+    response = await generate_content_with_retry(
+        client=client,
+        model=planner_model,
+        contents=contents,
+        config=None,
+        log_tag="CODING",
+        action=f"Generate page nodes for {page_name!r}",
+    )
     raw = response.text
     log.debug("CODING", f"Raw response: {len(raw)} chars for page={page_name!r}")
 
     children = parse_coding_response(raw, page_name)
+    children = sanitize_generated_children(children)
+    children = stabilize_generated_children(children)
     children = inject_image_urls(children)
 
     elem_count = count_elements(children)

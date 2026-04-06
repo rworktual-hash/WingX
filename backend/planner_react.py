@@ -22,6 +22,7 @@ import re
 import json
 from google import genai
 from dotenv import load_dotenv
+from llm_utils import generate_content_with_retry
 import logger as log
 
 load_dotenv()
@@ -537,10 +538,13 @@ async def run_react_planner(frames: list[dict]) -> dict:
     )
 
     # ── One Gemini call ───────────────────────────────────────────
-    response = client.models.generate_content(
-        model    = MODEL,
-        contents = prompt,
-        config   = {"temperature": 0.0},
+    response = await generate_content_with_retry(
+        client=client,
+        model=MODEL,
+        contents=prompt,
+        config={"temperature": 0.0},
+        log_tag="REACT_PLANNER",
+        action="Run React export planner",
     )
     raw = response.text.strip()
     log.debug("REACT_PLANNER", f"Raw response: {len(raw)} chars")

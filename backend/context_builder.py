@@ -18,12 +18,18 @@ The unified_prompt is what gets passed to run_planner().
 import os
 import re
 import json
+import base64
+from io import BytesIO
 from typing import Optional
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from PIL import Image, ImageChops
 
 import logger as log
+
+CONTENT_FILE_TEXT_CHAR_LIMIT = int(os.getenv("CONTEXT_FILE_TEXT_CHAR_LIMIT", "50000"))
+from llm_utils import generate_content_with_retry
 
 
 def _gemini_client():
@@ -78,6 +84,131 @@ def _assign_role(file_entry: FileEntry) -> str:
     return "content"
 
 
+def _decode_image_base64(file_base64: str) -> Image.Image:
+    raw = base64.b64decode(file_base64)
+    with Image.open(BytesIO(raw)) as img:
+        return img.convert("RGB")
+
+
+def _encode_image_base64(image: Image.Image, media_type: str) -> tuple[str, str]:
+    output = BytesIO()
+    normalized_media_type = (media_type or "image/png").lower()
+    if normalized_media_type == "image/jpeg":
+        image.save(output, format="JPEG", quality=95)
+        return base64.b64encode(output.getvalue()).decode("utf-8"), "image/jpeg"
+
+    image.save(output, format="PNG")
+    return base64.b64encode(output.getvalue()).decode("utf-8"), "image/png"
+
+
+def _average_rgb(image: Image.Image) -> tuple[int, int, int]:
+    tiny = image.resize((1, 1))
+    pixel = tiny.getpixel((0, 0))
+    return tuple(int(channel) for channel in pixel[:3])
+
+
+def _crop_outer_capture_padding(file_base64: str, media_type: str) -> tuple[str, str, dict]:
+    try:
+        image = _decode_image_base64(file_base64)
+    except Exception as exc:
+        log.warn("CONTEXT_BUILDER", f"Screenshot crop skipped — decode failed: {exc}")
+        return file_base64, media_type or "image/png", {"cropped": False, "reason": "decode_failed"}
+
+    original_width, original_height = image.size
+    if original_width < 200 or original_height < 200:
+        return file_base64, media_type or "image/png", {"cropped": False, "reason": "too_small"}
+
+    downsample_max = 320
+    scale = min(1.0, downsample_max / max(original_width, original_height))
+    sample_size = (
+        max(1, int(round(original_width * scale))),
+        max(1, int(round(original_height * scale))),
+    )
+    sample = image.resize(sample_size)
+
+    corner_span_x = max(8, sample_size[0] // 18)
+    corner_span_y = max(8, sample_size[1] // 18)
+    corner_boxes = [
+        (0, 0, corner_span_x, corner_span_y),
+        (sample_size[0] - corner_span_x, 0, sample_size[0], corner_span_y),
+        (0, sample_size[1] - corner_span_y, corner_span_x, sample_size[1]),
+        (sample_size[0] - corner_span_x, sample_size[1] - corner_span_y, sample_size[0], sample_size[1]),
+    ]
+    bg_colors = []
+    for box in corner_boxes:
+        color = _average_rgb(sample.crop(box))
+        if color not in bg_colors:
+            bg_colors.append(color)
+
+    if not bg_colors:
+        return file_base64, media_type or "image/png", {"cropped": False, "reason": "no_background"}
+
+    min_diff = None
+    for bg_color in bg_colors:
+        bg_image = Image.new("RGB", sample.size, bg_color)
+        diff = ImageChops.difference(sample, bg_image).convert("L")
+        min_diff = diff if min_diff is None else ImageChops.darker(min_diff, diff)
+
+    thresholded = min_diff.point(lambda p: 255 if p > 18 else 0)
+    foreground = thresholded.load()
+    row_cutoff = max(4, int(sample_size[0] * 0.08))
+    col_cutoff = max(4, int(sample_size[1] * 0.08))
+
+    active_rows = []
+    for y in range(sample_size[1]):
+        count = 0
+        for x in range(sample_size[0]):
+            if foreground[x, y]:
+                count += 1
+        if count >= row_cutoff:
+            active_rows.append(y)
+
+    active_cols = []
+    for x in range(sample_size[0]):
+        count = 0
+        for y in range(sample_size[1]):
+            if foreground[x, y]:
+                count += 1
+        if count >= col_cutoff:
+            active_cols.append(x)
+
+    if not active_rows or not active_cols:
+        return file_base64, media_type or "image/png", {"cropped": False, "reason": "no_dense_foreground"}
+
+    pad = 3
+    left_small = max(0, active_cols[0] - pad)
+    right_small = min(sample_size[0], active_cols[-1] + pad + 1)
+    top_small = max(0, active_rows[0] - pad)
+    bottom_small = min(sample_size[1], active_rows[-1] + pad + 1)
+
+    left = max(0, int(left_small / scale))
+    right = min(original_width, int((right_small + 1) / scale))
+    top = max(0, int(top_small / scale))
+    bottom = min(original_height, int((bottom_small + 1) / scale))
+
+    cropped_width = max(0, right - left)
+    cropped_height = max(0, bottom - top)
+    if cropped_width < original_width * 0.55 or cropped_height < original_height * 0.55:
+        return file_base64, media_type or "image/png", {"cropped": False, "reason": "crop_too_aggressive"}
+
+    if (
+        left <= 12 and
+        top <= 12 and
+        (original_width - right) <= 12 and
+        (original_height - bottom) <= 12
+    ):
+        return file_base64, media_type or "image/png", {"cropped": False, "reason": "no_meaningful_padding"}
+
+    cropped = image.crop((left, top, right, bottom))
+    encoded, output_media_type = _encode_image_base64(cropped, media_type)
+    return encoded, output_media_type, {
+        "cropped": True,
+        "bounds": {"left": left, "top": top, "right": right, "bottom": bottom},
+        "original_size": {"width": original_width, "height": original_height},
+        "cropped_size": {"width": cropped_width, "height": cropped_height},
+    }
+
+
 # ─────────────────────────────────────────────────────────────────
 # SYSTEM PROMPTS
 # ─────────────────────────────────────────────────────────────────
@@ -94,7 +225,9 @@ Return JSON:
   "detected_components": ["list of UI components: e.g. data table, search bar, dropdown, button group, stat card"],
   "layout_description": "2-3 sentence description of the overall layout structure and how sections are arranged",
   "color_palette": "primary and secondary colors observed",
-  "screen_type": "one of: full_page | modal | drawer | component | partial"
+  "screen_type": "one of: full_page | modal | drawer | component | partial",
+  "outer_padding_present": true,
+  "viewport_fill_guidance": "Explain whether the screenshot contains empty capture padding or browser whitespace that should be ignored, and describe how much of the 1440px frame the real UI should occupy."
 }
 
 Output ONLY valid JSON. No explanation.
@@ -112,8 +245,55 @@ Return JSON:
   "entities": ["list domain entities e.g. 'Contact', 'Deal', 'Task', 'Invoice'"],
   "pages_or_screens": ["list all screens or pages mentioned by name"],
   "content_summary": "2-3 sentence summary of what this product is and does",
-  "key_workflows": ["list the main workflows described e.g. 'Hold/Resume contact', 'Create deal pipeline'"]
+  "key_workflows": ["list the main workflows described e.g. 'Hold/Resume contact', 'Create deal pipeline'"],
+  "explicit_workflow_rows": [
+    {
+      "row_label": "Row 1",
+      "steps": [
+        {
+          "name": "Home Page1",
+          "instruction": "Any explicit instruction given for this page/state"
+        },
+        {
+          "name": "New Project Button click",
+          "instruction": "What happens in this click state"
+        },
+        {
+          "name": "New Project Open",
+          "instruction": "What the opened state should show"
+        }
+      ]
+    }
+  ],
+  "explicit_workflow_columns": [
+    {
+      "column_label": "Column 1",
+      "column_title": "Team A",
+      "rows": [
+        {
+          "row_label": "Row 1",
+          "steps": [
+            {"name": "Home Page1", "instruction": "Explicit instruction for this state"},
+            {"name": "New Project Button click", "instruction": "Explicit instruction for this state"},
+            {"name": "New Project Open", "instruction": "Explicit instruction for this state"}
+          ]
+        }
+      ]
+    }
+  ],
+  "screen_instructions": [
+    {
+      "name": "Home Page1",
+      "instruction": "Specific instruction for this screen if the document provides one"
+    }
+  ]
 }
+
+IMPORTANT:
+- If the document explicitly defines workflow rows, steps, page order, or branch order, capture them in `explicit_workflow_rows` exactly in the same order.
+- If the document explicitly defines columns/teams/modules with rows inside each one, capture them in `explicit_workflow_columns` exactly in the same order.
+- If the document gives page-by-page instructions, preserve them in `screen_instructions`.
+- Do not summarize explicit row order away.
 
 Output ONLY valid JSON. No explanation.
 """
@@ -131,10 +311,14 @@ Your job: combine these two orthogonal sources into ONE unified design prompt.
 Rules:
 - The layout context defines the visual style, component types, and structural patterns. Follow it.
 - The content context defines the features, screens, entities, and workflows. Include ALL of them.
+- If the content context contains explicit workflow rows or exact step order, preserve that order exactly.
 - Neither overrides the other — they serve different purposes.
 - Do NOT default to a "landing page" unless the content explicitly describes one.
 - If content describes a CRM, dashboard, or product screen — the output must describe FULL-FIDELITY PRODUCT SCREENS, not documentation boards.
-- Each major feature from the content context should become a separate full-screen Figma frame.
+- Each major feature from the content context should become a left-to-right feature flow made of separate full-screen Figma frames.
+- The flows should cover all meaningful interaction states without omitting major steps.
+- If explicit workflow rows are present, do not reinterpret or compress them into fewer frames. Keep one frame per declared step in the same row order.
+- If the screenshot has outer whitespace or capture padding around the real UI, explicitly ignore that padding and describe the actual site/app surface as filling the frame properly.
 - If no layout context exists, infer a clean professional style.
 - If no content context exists, use the layout as both style and content guide.
 
@@ -235,7 +419,18 @@ async def run_context_builder(request: ContextBuildRequest) -> JSONResponse:
         if first.file_base64:
             screenshot_base64     = first.file_base64
             screenshot_media_type = first.media_type or first.file_type or "image/png"
-            log.info("CONTEXT_BUILDER", f"Forwarding screenshot ({len(screenshot_base64)} chars)")
+            screenshot_base64, screenshot_media_type, crop_meta = _crop_outer_capture_padding(
+                screenshot_base64,
+                screenshot_media_type,
+            )
+            if crop_meta.get("cropped"):
+                log.info(
+                    "CONTEXT_BUILDER",
+                    "Forwarding cropped screenshot "
+                    f"({crop_meta['cropped_size']['width']}x{crop_meta['cropped_size']['height']})"
+                )
+            else:
+                log.info("CONTEXT_BUILDER", f"Forwarding screenshot ({len(screenshot_base64)} chars)")
 
     return JSONResponse({
         "success":               True,
@@ -260,21 +455,35 @@ async def run_context_builder(request: ContextBuildRequest) -> JSONResponse:
 async def _analyze_layout_file(file_entry: FileEntry, model_name: str, client) -> dict:
     """Analyze a layout file (image/screenshot) with Gemini vision."""
     media_type = file_entry.media_type or file_entry.file_type or "image/png"
+    image_base64 = file_entry.file_base64
+
+    if image_base64:
+        image_base64, media_type, crop_meta = _crop_outer_capture_padding(image_base64, media_type)
+        if crop_meta.get("cropped"):
+            log.info(
+                "CONTEXT_BUILDER",
+                "Layout screenshot cropped to remove outer capture padding "
+                f"({crop_meta['original_size']['width']}x{crop_meta['original_size']['height']} -> "
+                f"{crop_meta['cropped_size']['width']}x{crop_meta['cropped_size']['height']})"
+            )
 
     contents = [
         {
             "inline_data": {
                 "mime_type": media_type,
-                "data":      file_entry.file_base64,
+                "data":      image_base64,
             }
         },
         f"{LAYOUT_ANALYSIS_PROMPT}\n\nFilename: {file_entry.filename}\n\nAnalyze this visual reference and return the JSON object."
     ]
 
-    response = client.models.generate_content(
+    response = await generate_content_with_retry(
+        client=client,
         model=model_name,
         contents=contents,
         config={"temperature": 0.2},
+        log_tag="CONTEXT_BUILDER",
+        action=f"Analyze layout file {file_entry.filename!r}",
     )
     return _parse_json(response.text)
 
@@ -296,15 +505,28 @@ async def _analyze_content_file(file_entry: FileEntry, model_name: str, client) 
         ]
     else:
         # Plain text
-        text_snippet = (file_entry.file_text or "")[:10000]
+        source_text = file_entry.file_text or ""
+        if CONTENT_FILE_TEXT_CHAR_LIMIT > 0:
+            text_snippet = source_text[:CONTENT_FILE_TEXT_CHAR_LIMIT]
+            if len(source_text) > CONTENT_FILE_TEXT_CHAR_LIMIT:
+                text_snippet += "\n\n[... document truncated ...]"
+                log.warn(
+                    "CONTEXT_BUILDER",
+                    f"Content file {file_entry.filename!r} truncated to {CONTENT_FILE_TEXT_CHAR_LIMIT} chars (was {len(source_text)})"
+                )
+        else:
+            text_snippet = source_text
         contents = [
             f"{CONTENT_ANALYSIS_PROMPT}\n\nFilename: {file_entry.filename}\n\nDOCUMENT CONTENT:\n{text_snippet}\n\nAnalyze this document and return the JSON object."
         ]
 
-    response = client.models.generate_content(
+    response = await generate_content_with_retry(
+        client=client,
         model=model_name,
         contents=contents,
         config={"temperature": 0.2},
+        log_tag="CONTEXT_BUILDER",
+        action=f"Analyze content file {file_entry.filename!r}",
     )
     return _parse_json(response.text)
 
@@ -326,6 +548,11 @@ def _merge_layout_analyses(analyses: list[dict]) -> dict:
         "layout_description":  " ".join(a["analysis"].get("layout_description", "") for a in analyses),
         "color_palette":       analyses[0]["analysis"].get("color_palette", ""),
         "screen_type":         analyses[0]["analysis"].get("screen_type", "full_page"),
+        "outer_padding_present": any(a["analysis"].get("outer_padding_present", False) for a in analyses),
+        "viewport_fill_guidance": " | ".join(
+            a["analysis"].get("viewport_fill_guidance", "")
+            for a in analyses if a["analysis"].get("viewport_fill_guidance")
+        ),
         "source_files":        [a["filename"] for a in analyses],
     }
     return merged
@@ -339,6 +566,59 @@ def _merge_content_analyses(analyses: list[dict]) -> dict:
     if len(analyses) == 1:
         return analyses[0]["analysis"]
 
+    explicit_rows = []
+    explicit_columns = []
+    seen_row_signatures = set()
+    seen_column_signatures = set()
+    screen_instructions = []
+    seen_screen_instruction = set()
+    for entry in analyses:
+        analysis = entry["analysis"]
+        for column in analysis.get("explicit_workflow_columns", []) or []:
+            if not isinstance(column, dict):
+                continue
+            rows = column.get("rows", []) or []
+            signature = (
+                (column.get("column_label") or "").strip().lower(),
+                (column.get("column_title") or "").strip().lower(),
+                tuple(
+                    (
+                        (row.get("row_label") or "").strip().lower(),
+                        tuple((str(step.get("name", "")).strip().lower(), str(step.get("instruction", "")).strip().lower()) for step in (row.get("steps", []) or []) if isinstance(step, dict)),
+                    )
+                    for row in rows if isinstance(row, dict)
+                ),
+            )
+            if signature in seen_column_signatures:
+                continue
+            seen_column_signatures.add(signature)
+            explicit_columns.append(column)
+
+        for row in analysis.get("explicit_workflow_rows", []) or []:
+            if not isinstance(row, dict):
+                continue
+            steps = row.get("steps", []) or []
+            signature = (
+                (row.get("row_label") or "").strip().lower(),
+                tuple((str(step.get("name", "")).strip().lower(), str(step.get("instruction", "")).strip().lower()) for step in steps if isinstance(step, dict)),
+            )
+            if signature in seen_row_signatures:
+                continue
+            seen_row_signatures.add(signature)
+            explicit_rows.append(row)
+
+        for item in analysis.get("screen_instructions", []) or []:
+            if not isinstance(item, dict):
+                continue
+            signature = (
+                str(item.get("name", "")).strip().lower(),
+                str(item.get("instruction", "")).strip().lower(),
+            )
+            if signature in seen_screen_instruction:
+                continue
+            seen_screen_instruction.add(signature)
+            screen_instructions.append(item)
+
     merged = {
         "product_type":     analyses[0]["analysis"].get("product_type", "other"),
         "features":         list({f for a in analyses for f in a["analysis"].get("features", [])}),
@@ -347,6 +627,9 @@ def _merge_content_analyses(analyses: list[dict]) -> dict:
         "pages_or_screens": list({p for a in analyses for p in a["analysis"].get("pages_or_screens", [])}),
         "content_summary":  " ".join(a["analysis"].get("content_summary", "") for a in analyses),
         "key_workflows":    list({w for a in analyses for w in a["analysis"].get("key_workflows", [])}),
+        "explicit_workflow_columns": explicit_columns,
+        "explicit_workflow_rows": explicit_rows,
+        "screen_instructions": screen_instructions,
         "source_files":     [a["filename"] for a in analyses],
     }
     return merged
@@ -376,10 +659,13 @@ async def _run_unifier(
         "Now produce the unified JSON output."
     )
 
-    response = client.models.generate_content(
+    response = await generate_content_with_retry(
+        client=client,
         model=model_name,
         contents=full_prompt,
         config={"temperature": 0.3},
+        log_tag="CONTEXT_BUILDER",
+        action="Build unified context",
     )
     return _parse_json(response.text)
 

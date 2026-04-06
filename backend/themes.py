@@ -746,13 +746,7 @@ THEMES = [
         "animation": "glow",
         "description": "Deep space with quantum glow"
     },
-    {
-        "name": "Robotics",
-        "category": "tech",
-        "colors": ["#2A2A2A", "#3A3A3A", "#4A4A4A", "#FF5E5E", "#5EFF5E"],
-        "animation": "slide",
-        "description": "Metallic grays with red and green"
-    },
+    
     {
         "name": "Crypt",
         "category": "tech",
@@ -760,8 +754,17 @@ THEMES = [
         "animation": "fade",
         "description": "Bitcoin orange and Ethereum blue"
     },
+    
+    {
+        "name": "Robotics",
+        "category": "tech",
+        "colors": ["#2A2A2A", "#3A3A3A", "#4A4A4A", "#FF5E5E", "#5EFF5E"],
+        "animation": "slide",
+        "description": "Metallic grays with red and green"
+    },
 
     # Minimal (11 themes)
+
     {
         "name": "Zen",
         "category": "minimal",

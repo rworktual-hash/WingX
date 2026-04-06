@@ -13,6 +13,7 @@ from coding   import generate_page_nodes
 from analyzer import run_analyze, AnalyzeRequest
 from context_builder import run_context_builder, ContextBuildRequest
 import logger as log
+from llm_utils import generate_content_with_retry
 
 app = FastAPI(title="Worktual AI Backend")
 
@@ -30,8 +31,24 @@ class PromptRequest(BaseModel):
     prompt:                str
     layout_context:        Optional[dict] = None
     content_context:       Optional[dict] = None
+    frames_to_generate:    Optional[list[str]] = None
+    mode:                  Optional[str] = None
     screenshot_base64:     Optional[str]  = None
     screenshot_media_type: Optional[str]  = "image/png"
+    memory_context:        Optional[dict] = None
+    selected_node:         Optional[dict] = None
+    source_prompt:         Optional[str] = None
+
+
+class FollowupGenerateRequest(BaseModel):
+    prompt:                str
+    selected_node:         dict
+    memory_context:        Optional[dict] = None
+    layout_context:        Optional[dict] = None
+    content_context:       Optional[dict] = None
+    screenshot_base64:     Optional[str] = None
+    screenshot_media_type: Optional[str] = "image/png"
+    source_prompt:         Optional[str] = None
 
 # ─────────────────────────────────────────────────────────────────
 # /  —  Health check
@@ -90,7 +107,13 @@ async def image_proxy(url: str = "", hash: str = ""):
 async def plan_route(request: PromptRequest):
     if not request.prompt.strip():
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-    return await run_planner(request.prompt)
+    return await run_planner(
+        user_prompt=request.prompt,
+        layout_context=request.layout_context,
+        content_context=request.content_context,
+        frames_to_generate=request.frames_to_generate,
+        mode=request.mode,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -112,7 +135,10 @@ async def generate(request: PromptRequest):
 
             plan = await run_planner(
                 user_prompt=request.prompt,
+                layout_context=request.layout_context,
                 content_context=request.content_context,
+                frames_to_generate=request.frames_to_generate,
+                mode=request.mode,
             )
 
             yield sse_log(log.success("GENERATE",
@@ -211,6 +237,36 @@ async def generate(request: PromptRequest):
                         "theme": {
                             **res["theme"],
                             "feature_group": p.get("feature_group", res["page_name"].split("—")[0].strip()),
+                            "flow_group_id": p.get("flow_group_id", p.get("flow_group", p.get("feature_group", res["page_name"].split("—")[0].strip()))),
+                            "flow_group": p.get("flow_group", p.get("feature_group", res["page_name"].split("—")[0].strip())),
+                        },
+                        "flow_meta": {
+                            "feature_group": p.get("feature_group", ""),
+                            "flow_group_id": p.get("flow_group_id", p.get("flow_group", p.get("feature_group", ""))),
+                            "flow_group": p.get("flow_group", p.get("feature_group", "")),
+                            "screen_title": p.get("screen_title", p.get("name", res["page_name"])),
+                            "flow_step": p.get("flow_step"),
+                            "flow_total": p.get("flow_total"),
+                            "flow_group_step": p.get("flow_group_step"),
+                            "flow_group_total": p.get("flow_group_total"),
+                            "click_target_keywords": p.get("click_target_keywords", []),
+                            "annotation_text": p.get("annotation_text", ""),
+                            "annotation_target_keywords": p.get("annotation_target_keywords", []),
+                            "branch_root": p.get("branch_root", ""),
+                            "branch_trigger": p.get("branch_trigger", ""),
+                            "branch_goal": p.get("branch_goal", ""),
+                            "branch_kind": p.get("branch_kind", ""),
+                            "column_group": p.get("column_group", ""),
+                            "column_group_id": p.get("column_group_id", ""),
+                            "column_group_order": p.get("column_group_order", 0),
+                            "column_label": p.get("column_label", ""),
+                            "column_title": p.get("column_title", ""),
+                            "row_label": p.get("row_label", ""),
+                            "row_order": p.get("row_order", 0),
+                            "followup_source_frame_id": p.get("followup_source_frame_id", ""),
+                            "followup_source_frame_name": p.get("followup_source_frame_name", ""),
+                            "navigation": p.get("navigation", {}),
+                            "project_navigation": p.get("project_navigation", {}),
                         },
                         "total_children": len(children),
                         "total_chunks":   n_chunks,
@@ -324,6 +380,124 @@ async def generate_full(request: PromptRequest):
         "design":         {"frames": frames},
         "timestamp":      datetime.datetime.utcnow().isoformat() + "Z",
     })
+
+
+@app.post("/generate-followup")
+async def generate_followup(request: FollowupGenerateRequest):
+    if not request.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+    if not request.selected_node:
+        raise HTTPException(status_code=400, detail="Selected node is required")
+
+    log.info("FOLLOWUP", f"Request received — node={request.selected_node.get('nodeName') or request.selected_node.get('node_name')!r}")
+
+    async def stream_followup():
+        start = time.time()
+        try:
+            yield sse("status", {"message": "Preparing selected-element generation..."})
+            yield sse_log(log.info("FOLLOWUP", "Building follow-up page from selection..."))
+
+            page, project_title, followup_prompt = _build_followup_page(request)
+
+            yield sse("plan_ready", {
+                "project_title": project_title,
+                "total_pages": 1,
+                "pages": [{"id": page["id"], "name": page["name"]}],
+            })
+            yield sse_log(log.info("FOLLOWUP", f"[1/1] Queued: {page['name']!r}"))
+
+            result = await generate_page_nodes(
+                page=page,
+                project_title=project_title,
+                user_prompt=followup_prompt,
+                layout_context=request.layout_context,
+                screenshot_base64=request.screenshot_base64,
+                screenshot_media_type=request.screenshot_media_type or "image/png",
+            )
+
+            frame = result["frame"]
+            children = frame.get("children", [])
+            chunks = _chunk_list(children, CHILDREN_PER_CHUNK)
+            n_chunks = len(chunks)
+
+            yield sse_log(log.info("FOLLOWUP", f"Streaming page={page['name']!r} — {len(children)} elements in {n_chunks} chunks"))
+            yield sse("page_start", {
+                "page_id": result["page_id"],
+                "page_name": result["page_name"],
+                "page_number": 1,
+                "total_pages": 1,
+                "theme": {
+                    **result["theme"],
+                    "feature_group": page.get("feature_group", ""),
+                    "flow_group_id": page.get("flow_group_id", page.get("name", "")),
+                    "flow_group": page.get("flow_group", page.get("name", "")),
+                },
+                "flow_meta": {
+                    "feature_group": page.get("feature_group", ""),
+                    "flow_group_id": page.get("flow_group_id", page.get("name", "")),
+                    "flow_group": page.get("flow_group", page.get("name", "")),
+                    "screen_title": page.get("screen_title", page.get("name", result["page_name"])),
+                    "flow_step": page.get("flow_step"),
+                    "flow_total": page.get("flow_total"),
+                    "flow_group_step": page.get("flow_group_step"),
+                    "flow_group_total": page.get("flow_group_total"),
+                    "click_target_keywords": page.get("click_target_keywords", []),
+                    "annotation_text": page.get("annotation_text", ""),
+                    "annotation_target_keywords": page.get("annotation_target_keywords", []),
+                    "branch_root": page.get("branch_root", ""),
+                    "branch_trigger": page.get("branch_trigger", ""),
+                    "branch_goal": page.get("branch_goal", ""),
+                    "branch_kind": page.get("branch_kind", ""),
+                    "followup_source_frame_id": page.get("followup_source_frame_id", ""),
+                    "followup_source_frame_name": page.get("followup_source_frame_name", ""),
+                    "navigation": page.get("navigation", {}),
+                    "project_navigation": page.get("project_navigation", {}),
+                },
+                "total_children": len(children),
+                "total_chunks": n_chunks,
+                "frame_meta": {
+                    "type": frame["type"],
+                    "name": frame["name"],
+                    "width": frame["width"],
+                    "height": frame["height"],
+                    "backgroundColor": frame["backgroundColor"],
+                },
+            })
+
+            for ci, chunk in enumerate(chunks):
+                yield f"data: {json.dumps({'type': 'page_chunk', 'payload': {'page_id': result['page_id'], 'chunk_index': ci, 'total_chunks': n_chunks, 'children': chunk}})}\n\n"
+
+            yield sse("page_end", {
+                "page_id": result["page_id"],
+                "page_name": result["page_name"],
+                "page_number": 1,
+                "total_pages": 1,
+            })
+
+            elapsed = round(time.time() - start, 1)
+            yield sse_log(log.success("FOLLOWUP", f"Complete — 1/1 pages in {elapsed}s"))
+            yield sse("complete", {
+                "project_title": project_title,
+                "total_pages": 1,
+                "pages_generated": 1,
+                "generation_time": f"{elapsed}s",
+                "message": f"✅ Follow-up page generated in {elapsed}s",
+            })
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            yield sse_log(log.error("FOLLOWUP", f"Fatal error — {exc}"))
+            yield sse("error", {"message": str(exc)})
+
+    return StreamingResponse(
+        stream_followup(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -659,10 +833,13 @@ async def _ai_write_page(component_name: str, route_path: str,
         f"{json.dumps(cleaned_frame, separators=(',', ':'))}"
     )
 
-    response = gemini_client.models.generate_content(
+    response = await generate_content_with_retry(
+        client=gemini_client,
         model=model,
         contents=prompt,
         config={"temperature": 0.2},
+        log_tag="EXPORT",
+        action=f"Write React component {component_name!r}",
     )
     raw = response.text.strip()
     raw = re.sub(r"^```(?:jsx?|javascript|typescript|tsx?)?\s*\n?", "", raw, flags=re.MULTILINE)
@@ -720,6 +897,7 @@ async def export_react(request: ExportRequest):
 
     async def stream_export():
         try:
+            import asyncio
             from planner_react import (
                 run_react_planner,
                 build_page_context,
@@ -752,11 +930,65 @@ async def export_react(request: ExportRequest):
             pages_plan = product_map.get("pages", [])
             comps_plan = product_map.get("components", [])
             routing    = product_map.get("routing", [])
-            total      = len(pages_plan) + len(comps_plan)
 
             yield sse_log(log.success("EXPORT",
                 f"Planner done — {len(pages_plan)} page(s), {len(comps_plan)} component(s)"
             ))
+
+            work_items = []
+            sequence_n = 0
+
+            for page in pages_plan:
+                frame_data = resolve_page_frame(page, all_frames)
+                if not frame_data:
+                    yield sse_log(log.warn("EXPORT",
+                        f"No frame found for page {page['name']!r} — skipping"
+                    ))
+                    continue
+
+                sequence_n += 1
+                work_items.append({
+                    "kind": "page",
+                    "sequence": sequence_n,
+                    "component_name": page["component_name"],
+                    "route_path": page["route"],
+                    "file_name": page["file"],
+                    "display_name": page["name"],
+                    "frame": frame_data["frame"],
+                    "nav_block": build_page_context(page, product_map),
+                })
+
+            for comp in comps_plan:
+                resolved = resolve_component_frames(comp, all_frames)
+                master   = resolved.get("master")
+                tab_data = resolved.get("tabs", {})
+
+                if not master:
+                    yield sse_log(log.warn("EXPORT",
+                        f"No frame found for component {comp['name']!r} — skipping"
+                    ))
+                    continue
+
+                sequence_n += 1
+                work_items.append({
+                    "kind": "component",
+                    "sequence": sequence_n,
+                    "component_name": comp["component_name"],
+                    "route_path": "",
+                    "file_name": comp["file"],
+                    "display_name": comp["name"],
+                    "frame": _merge_tab_frames(
+                        master_frame=master["frame"],
+                        tab_data=tab_data,
+                        comp=comp,
+                    ),
+                    "nav_block": build_component_context(comp, product_map),
+                    "comp_type": comp.get("type", ""),
+                    "tab_count": len(tab_data),
+                })
+
+            total = len(work_items)
+
             yield sse("export_plan_ready", {
                 "pages":      [{"name": p["name"], "route": p["route"]} for p in pages_plan],
                 "components": [{"name": c["name"], "type": c["type"]}   for c in comps_plan],
@@ -768,109 +1000,77 @@ async def export_react(request: ExportRequest):
             })
 
             files: dict[str, str] = {}
-            item_n = 0
+            semaphore    = asyncio.Semaphore(3)
+            result_queue = asyncio.Queue()
 
-            for page in pages_plan:
-                item_n += 1
-                component_name = page["component_name"]
-                route_path     = page["route"]
-                file_name      = page["file"]
-
-                frame_data = resolve_page_frame(page, all_frames)
-                if not frame_data:
-                    yield sse_log(log.warn("EXPORT",
-                        f"No frame found for page {page['name']!r} — skipping"
+            for item in work_items:
+                if item["kind"] == "page":
+                    yield sse_log(log.info(
+                        "EXPORT",
+                        f"[{item['sequence']}/{total}] Queued PAGE {item['component_name']!r}"
                     ))
-                    continue
-
-                context_block = build_page_context(page, product_map)
-
-                yield sse_log(log.info("EXPORT",
-                    f"[{item_n}/{total}] Generating PAGE {component_name!r}"
-                ))
-                yield sse("export_page_start", {
-                    "page_number":    item_n,
-                    "total_pages":    total,
-                    "component_name": component_name,
-                    "page_name":      page["name"],
-                })
-
-                jsx = await _ai_write_page(
-                    component_name = component_name,
-                    route_path     = route_path,
-                    all_routes     = routing,
-                    frame          = frame_data["frame"],
-                    project_title  = request.project_title,
-                    nav_block      = context_block,
-                )
-                files[file_name] = jsx
-
-                yield sse_log(log.success("EXPORT",
-                    f"[{item_n}/{total}] {file_name} ({len(jsx):,} chars)"
-                ))
-                yield sse("export_page_done", {
-                    "page_number":    item_n,
-                    "total_pages":    total,
-                    "component_name": component_name,
-                    "file_name":      file_name,
-                    "file_size":      len(jsx),
-                })
-
-            for comp in comps_plan:
-                item_n += 1
-                component_name = comp["component_name"]
-                file_name      = comp["file"]
-
-                resolved = resolve_component_frames(comp, all_frames)
-                master   = resolved.get("master")
-                tab_data = resolved.get("tabs", {})
-
-                if not master:
-                    yield sse_log(log.warn("EXPORT",
-                        f"No frame found for component {comp['name']!r} — skipping"
+                else:
+                    extra = ""
+                    if item.get("tab_count"):
+                        extra = f" with {item['tab_count']} tab(s)"
+                    yield sse_log(log.info(
+                        "EXPORT",
+                        f"[{item['sequence']}/{total}] Queued COMPONENT "
+                        f"{item['component_name']!r} ({item.get('comp_type','generic')}){extra}"
                     ))
-                    continue
 
-                merged_frame = _merge_tab_frames(
-                    master_frame = master["frame"],
-                    tab_data     = tab_data,
-                    comp         = comp,
-                )
+            async def _render_one(item):
+                async with semaphore:
+                    try:
+                        jsx = await _ai_write_page(
+                            component_name=item["component_name"],
+                            route_path=item["route_path"],
+                            all_routes=routing,
+                            frame=item["frame"],
+                            project_title=request.project_title,
+                            nav_block=item["nav_block"],
+                        )
+                        await result_queue.put((item["sequence"], item, jsx, None))
+                    except Exception as exc:
+                        await result_queue.put((item["sequence"], item, None, exc))
 
-                context_block = build_component_context(comp, product_map)
+            tasks = [asyncio.create_task(_render_one(item)) for item in work_items]
+            pending = {}
+            next_to_send = 1
+            received = 0
 
-                yield sse_log(log.info("EXPORT",
-                    f"[{item_n}/{total}] Generating COMPONENT "
-                    f"{component_name!r} ({comp['type']})"
-                    + (f" with {len(tab_data)} tab(s)" if tab_data else "")
-                ))
-                yield sse("export_page_start", {
-                    "page_number":    item_n,
-                    "total_pages":    total,
-                    "component_name": component_name,
-                    "page_name":      comp["name"],
-                })
+            while received < total:
+                sequence, item, jsx, exc = await result_queue.get()
+                received += 1
+                pending[sequence] = (item, jsx, exc)
 
-                jsx = await _ai_write_page(
-                    component_name = component_name,
-                    route_path     = "",
-                    all_routes     = routing,
-                    frame          = merged_frame,
-                    project_title  = request.project_title,
-                    nav_block      = context_block,
-                )
-                files[file_name] = jsx
+                while next_to_send in pending:
+                    item, jsx, exc = pending.pop(next_to_send)
+                    if exc is not None:
+                        raise exc
 
-                yield sse_log(log.success("EXPORT",
-                    f"[{item_n}/{total}] {file_name} ({len(jsx):,} chars)"
-                ))
-                yield sse("export_page_done", {
-                    "page_number":    item_n,
-                    "total_pages":    total,
-                    "component_name": component_name,
-                    "file_name":      file_name,
-                    "file_size":      len(jsx),
-                })
+                    yield sse("export_page_start", {
+                        "page_number":    item["sequence"],
+                        "total_pages":    total,
+                        "component_name": item["component_name"],
+                        "page_name":      item["display_name"],
+                    })
+
+                    files[item["file_name"]] = jsx
+
+                    yield sse_log(log.success("EXPORT",
+                        f"[{item['sequence']}/{total}] {item['file_name']} ({len(jsx):,} chars)"
+                    ))
+                    yield sse("export_page_done", {
+                        "page_number":    item["sequence"],
+                        "total_pages":    total,
+                        "component_name": item["component_name"],
+                        "file_name":      item["file_name"],
+                        "file_size":      len(jsx),
+                    })
+                    next_to_send += 1
+
+            await asyncio.gather(*tasks)
 
             yield sse_log(log.info("EXPORT", "Writing boilerplate files..."))
 
@@ -1103,3 +1303,156 @@ def sse_log(log_entry: dict) -> str:
 
 def _chunk_list(lst: list, size: int) -> list:
     return [lst[i:i + size] for i in range(0, len(lst), size)] if lst else [[]]
+
+
+def _compact_memory_summary(memory_context: dict | None) -> str:
+    memory_context = memory_context or {}
+    pages = memory_context.get("pages", []) or []
+    page_lines = []
+    for page in pages[:18]:
+        if not isinstance(page, dict):
+            continue
+        bits = [
+            page.get("screen_title") or page.get("name") or "Screen",
+            page.get("feature_group") or "",
+            page.get("flow_group") or "",
+        ]
+        nav = page.get("navigation") or {}
+        if nav.get("primary_links"):
+            bits.append("nav=" + ", ".join(nav.get("primary_links", [])[:8]))
+        page_lines.append(" | ".join([b for b in bits if b]))
+
+    theme = memory_context.get("preferred_theme") or {}
+    theme_line = ""
+    if theme:
+        theme_line = f"Preferred theme: {theme.get('name','')} | colors: {', '.join(theme.get('colors', [])[:5])}"
+
+    nav_model = memory_context.get("navigation_model") or {}
+    nav_line = ""
+    if nav_model.get("primary_links"):
+        nav_line = f"Shared navigation: {', '.join(nav_model.get('primary_links', [])[:10])} | layout={nav_model.get('layout', '')}"
+
+    return "\n".join(
+        [line for line in [
+            theme_line,
+            nav_line,
+            "Existing pages:",
+            *page_lines,
+        ] if line]
+    ).strip()
+
+
+def _build_followup_page(request: FollowupGenerateRequest) -> tuple[dict, str, str]:
+    selected = request.selected_node or {}
+    memory_context = request.memory_context or {}
+    source_frame_name = (
+        selected.get("parentFrameName")
+        or selected.get("parent_frame_name")
+        or selected.get("sourceFrameName")
+        or "Current Screen"
+    )
+    source_frame_id = (
+        selected.get("parentFrameId")
+        or selected.get("parent_frame_id")
+        or selected.get("sourceFrameId")
+        or ""
+    )
+    node_name = (
+        selected.get("nodeName")
+        or selected.get("node_name")
+        or selected.get("name")
+        or "Selected Element"
+    )
+    node_type = (
+        selected.get("nodeType")
+        or selected.get("node_type")
+        or selected.get("type")
+        or "NODE"
+    )
+
+    source_page_meta = None
+    for page in (memory_context.get("pages", []) or []):
+        if not isinstance(page, dict):
+            continue
+        if source_frame_id and page.get("frame_id") == source_frame_id:
+            source_page_meta = page
+            break
+        if page.get("name") == source_frame_name or page.get("screen_title") == source_frame_name:
+            source_page_meta = page
+            break
+
+    width = int((source_page_meta or {}).get("width", 1440) or 1440)
+    height = int((source_page_meta or {}).get("height", 1080) or 1080)
+    navigation = (source_page_meta or {}).get("navigation") or (memory_context.get("navigation_model") or {})
+    project_title = memory_context.get("project_title") or "Product Design"
+
+    page_name = f"{source_frame_name} -> {node_name}"
+    screen_title = request.prompt.strip()[:72] or f"{node_name} Result"
+    memory_summary = _compact_memory_summary(memory_context)
+
+    followup_desc = (
+        f"Generate the next page or state that appears after the user clicks '{node_name}' on '{source_frame_name}'. "
+        f"Selected node type: {node_type}. User expectation: {request.prompt.strip()}."
+    )
+    if source_page_meta and source_page_meta.get("description"):
+        followup_desc += " Source page summary: " + str(source_page_meta.get("description")).strip()
+
+    user_prompt = (
+        (request.source_prompt or memory_context.get("source_prompt") or "").strip() + "\n\n"
+        f"FOLLOW-UP GENERATION TASK:\n"
+        f"- Existing project title: {project_title}\n"
+        f"- Source screen: {source_frame_name}\n"
+        f"- Selected interactive element: {node_name} ({node_type})\n"
+        f"- Generate the next page/state that opens after this interaction.\n"
+        f"- Keep the same theme, navigation labels/order/placement, shell, spacing, component system, and visual language.\n"
+        f"- The new page must feel like it belongs to the already generated product.\n"
+        f"- User expectation for this new page: {request.prompt.strip()}\n"
+    )
+    if memory_summary:
+        user_prompt += f"\nPROJECT MEMORY:\n{memory_summary}\n"
+
+    page = {
+        "id": f"followup_{int(time.time() * 1000)}",
+        "name": page_name,
+        "screen_title": screen_title,
+        "feature_group": (source_page_meta or {}).get("feature_group", source_frame_name),
+        "flow_step": 1,
+        "flow_total": 1,
+        "flow_group": page_name,
+        "flow_group_id": f"followup_{re.sub(r'[^a-z0-9]+', '_', page_name.lower()).strip('_') or 'page'}",
+        "flow_group_step": 1,
+        "flow_group_total": 1,
+        "description": followup_desc,
+        "ui_state": "followup_selection",
+        "width": width,
+        "height": height,
+        "images": [],
+        "sections": [{
+            "section_name": "Main Content",
+            "purpose": followup_desc,
+            "components": [],
+        }],
+        "click_target_keywords": [str(node_name)],
+        "annotation_text": f"Generated from selected element: {node_name}",
+        "annotation_target_keywords": [str(node_name)],
+        "navigation": navigation,
+        "project_navigation": memory_context.get("navigation_model") or navigation,
+        "journey": {
+            "previous_screen": source_frame_name,
+            "next_screen": "",
+            "previous_page_name": source_frame_name,
+            "next_page_name": "",
+            "branch_root": source_frame_name,
+            "branch_trigger": node_name,
+            "branch_goal": request.prompt.strip(),
+            "branch_kind": "followup_selection",
+        },
+        "branch_root": source_frame_name,
+        "branch_trigger": node_name,
+        "branch_goal": request.prompt.strip(),
+        "branch_kind": "followup_selection",
+        "memory_context": memory_context,
+        "followup_source_frame_id": source_frame_id,
+        "followup_source_frame_name": source_frame_name,
+    }
+    return page, project_title, user_prompt

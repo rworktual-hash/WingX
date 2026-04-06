@@ -15,6 +15,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import logger as log
+from llm_utils import generate_content_with_retry
+
+TEXT_ANALYSIS_CHAR_LIMIT = int(os.getenv("ANALYZER_TEXT_CHAR_LIMIT", "40000"))
 
 # ── Lazy import of Gemini client from coding.py to avoid circular deps
 def _gemini_client():
@@ -92,10 +95,13 @@ async def run_analyze(request: AnalyzeRequest) -> JSONResponse:
         contents = _build_contents(request, mode_block, instruction_block)
 
         log.info("ANALYZE", f"Calling Gemini model={model_name}")
-        response = _gemini_client().models.generate_content(
+        response = await generate_content_with_retry(
+            client=_gemini_client(),
             model=model_name,
             contents=contents,
             config={"temperature": 0.4},
+            log_tag="ANALYZE",
+            action=f"Analyze file {request.filename!r}",
         )
         raw = response.text.strip()
         log.info("ANALYZE", f"Gemini response received ({len(raw)} chars)")
@@ -155,10 +161,14 @@ def _build_contents(request: AnalyzeRequest, mode_block: str, instruction_block:
         return [image_part, text_part]
 
     # Plain text document
-    text_snippet = request.file_text[:8000]
-    if len(request.file_text) > 8000:
-        text_snippet += "\n\n[... document truncated ...]"
-        log.warn("ANALYZE", f"Document truncated to 8000 chars (was {len(request.file_text)})")
+    source_text = request.file_text or ""
+    if TEXT_ANALYSIS_CHAR_LIMIT > 0:
+        text_snippet = source_text[:TEXT_ANALYSIS_CHAR_LIMIT]
+        if len(source_text) > TEXT_ANALYSIS_CHAR_LIMIT:
+            text_snippet += "\n\n[... document truncated ...]"
+            log.warn("ANALYZE", f"Document truncated to {TEXT_ANALYSIS_CHAR_LIMIT} chars (was {len(source_text)})")
+    else:
+        text_snippet = source_text
 
     full_text = (
         f"{ANALYZE_SYSTEM_PROMPT}\n"
