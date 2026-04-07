@@ -842,7 +842,7 @@ def _render_image(node: dict, indent: str, scale: str = "scale") -> str:
     opacity    = node.get("opacity", 1)
     name       = _safe_comment(node.get("name", "image"))
 
-    IMAGE_PROXY = "http://localhost:9000/api/image-proxy"
+    IMAGE_PROXY = "https://wingx-2vpp.onrender.com/api/image-proxy"
 
     if image_hash and (not src or src in ("", "PLACEHOLDER") or src.startswith("FIGMA_IMAGE:")):
         src = f"{IMAGE_PROXY}?hash={image_hash}"
@@ -996,7 +996,7 @@ def _render_container(
 
     image_hash     = node.get("imageHash", "")
     has_image_fill = node.get("imageFill", False) and bool(image_hash)
-    IMAGE_PROXY    = "http://localhost:9000/api/image-proxy"
+    IMAGE_PROXY    = "https://wingx-2vpp.onrender.com/api/image-proxy"
 
     # ── Bug 1 fix ─────────────────────────────────────────────────
     # A FRAME/COMPONENT node in Figma defines its OWN coordinate space.
