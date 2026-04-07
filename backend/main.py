@@ -50,6 +50,18 @@ class FollowupGenerateRequest(BaseModel):
     screenshot_media_type: Optional[str] = "image/png"
     source_prompt:         Optional[str] = None
 
+
+class AttachmentFollowupRequest(BaseModel):
+    prompt:                str
+    primary_page:          dict
+    context_pages:         Optional[list[dict]] = None
+    components:            Optional[list[dict]] = None
+    layout_context:        Optional[dict] = None
+    content_context:       Optional[dict] = None
+    screenshot_base64:     Optional[str] = None
+    screenshot_media_type: Optional[str] = "image/png"
+    project_title:         Optional[str] = None
+
 # ─────────────────────────────────────────────────────────────────
 # /  —  Health check
 # ─────────────────────────────────────────────────────────────────
@@ -487,6 +499,130 @@ async def generate_followup(request: FollowupGenerateRequest):
             import traceback
             traceback.print_exc()
             yield sse_log(log.error("FOLLOWUP", f"Fatal error — {exc}"))
+            yield sse("error", {"message": str(exc)})
+
+    return StreamingResponse(
+        stream_followup(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.post("/generate-attachment-followup")
+async def generate_attachment_followup(request: AttachmentFollowupRequest):
+    if not request.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+    if not request.primary_page:
+        raise HTTPException(status_code=400, detail="Primary page is required")
+
+    primary_name = (
+        request.primary_page.get("nodeName")
+        or request.primary_page.get("name")
+        or request.primary_page.get("parentFrameName")
+        or "Primary Page"
+    )
+    log.info("ATTACH-FLOW", f"Request received — primary={primary_name!r}")
+
+    async def stream_followup():
+        start = time.time()
+        try:
+            yield sse("status", {"message": "Preparing attachment-based generation..."})
+            yield sse_log(log.info("ATTACH-FLOW", "Building temporary context from selected attachments..."))
+
+            page, project_title, followup_prompt = _build_attachment_followup_page(request)
+
+            yield sse("plan_ready", {
+                "project_title": project_title,
+                "total_pages": 1,
+                "pages": [{"id": page["id"], "name": page["name"]}],
+            })
+            yield sse_log(log.info("ATTACH-FLOW", f"[1/1] Queued: {page['name']!r}"))
+
+            result = await generate_page_nodes(
+                page=page,
+                project_title=project_title,
+                user_prompt=followup_prompt,
+                layout_context=request.layout_context,
+                screenshot_base64=request.screenshot_base64,
+                screenshot_media_type=request.screenshot_media_type or "image/png",
+            )
+
+            frame = result["frame"]
+            children = frame.get("children", [])
+            chunks = _chunk_list(children, CHILDREN_PER_CHUNK)
+            n_chunks = len(chunks)
+
+            yield sse_log(log.info("ATTACH-FLOW", f"Streaming page={page['name']!r} — {len(children)} elements in {n_chunks} chunks"))
+            yield sse("page_start", {
+                "page_id": result["page_id"],
+                "page_name": result["page_name"],
+                "page_number": 1,
+                "total_pages": 1,
+                "theme": {
+                    **result["theme"],
+                    "feature_group": page.get("feature_group", ""),
+                    "flow_group_id": page.get("flow_group_id", page.get("name", "")),
+                    "flow_group": page.get("flow_group", page.get("name", "")),
+                },
+                "flow_meta": {
+                    "feature_group": page.get("feature_group", ""),
+                    "flow_group_id": page.get("flow_group_id", page.get("name", "")),
+                    "flow_group": page.get("flow_group", page.get("name", "")),
+                    "screen_title": page.get("screen_title", page.get("name", result["page_name"])),
+                    "flow_step": page.get("flow_step"),
+                    "flow_total": page.get("flow_total"),
+                    "flow_group_step": page.get("flow_group_step"),
+                    "flow_group_total": page.get("flow_group_total"),
+                    "click_target_keywords": page.get("click_target_keywords", []),
+                    "annotation_text": page.get("annotation_text", ""),
+                    "annotation_target_keywords": page.get("annotation_target_keywords", []),
+                    "branch_root": page.get("branch_root", ""),
+                    "branch_trigger": page.get("branch_trigger", ""),
+                    "branch_goal": page.get("branch_goal", ""),
+                    "branch_kind": page.get("branch_kind", ""),
+                    "followup_source_frame_id": page.get("followup_source_frame_id", ""),
+                    "followup_source_frame_name": page.get("followup_source_frame_name", ""),
+                    "navigation": page.get("navigation", {}),
+                    "project_navigation": page.get("project_navigation", {}),
+                },
+                "total_children": len(children),
+                "total_chunks": n_chunks,
+                "frame_meta": {
+                    "type": frame["type"],
+                    "name": frame["name"],
+                    "width": frame["width"],
+                    "height": frame["height"],
+                    "backgroundColor": frame["backgroundColor"],
+                },
+            })
+
+            for ci, chunk in enumerate(chunks):
+                yield f"data: {json.dumps({'type': 'page_chunk', 'payload': {'page_id': result['page_id'], 'chunk_index': ci, 'total_chunks': n_chunks, 'children': chunk}})}\n\n"
+
+            yield sse("page_end", {
+                "page_id": result["page_id"],
+                "page_name": result["page_name"],
+                "page_number": 1,
+                "total_pages": 1,
+            })
+
+            elapsed = round(time.time() - start, 1)
+            yield sse_log(log.success("ATTACH-FLOW", f"Complete — 1/1 pages in {elapsed}s"))
+            yield sse("complete", {
+                "project_title": project_title,
+                "total_pages": 1,
+                "pages_generated": 1,
+                "generation_time": f"{elapsed}s",
+                "message": f"✅ Attachment-based page generated in {elapsed}s",
+            })
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            yield sse_log(log.error("ATTACH-FLOW", f"Fatal error — {exc}"))
             yield sse("error", {"message": str(exc)})
 
     return StreamingResponse(
@@ -1340,6 +1476,342 @@ def _compact_memory_summary(memory_context: dict | None) -> str:
             *page_lines,
         ] if line]
     ).strip()
+
+
+def _preferred_theme_from_layout_context(layout_context: dict | None) -> dict:
+    layout_context = layout_context or {}
+    raw = " ".join([
+        str(layout_context.get("color_palette", "") or ""),
+        str(layout_context.get("visual_style", "") or ""),
+    ])
+    colors = re.findall(r'#[0-9A-Fa-f]{3,8}', raw)
+    deduped = []
+    for color in colors:
+        if color not in deduped:
+            deduped.append(color)
+        if len(deduped) >= 5:
+            break
+    if not deduped:
+        return {}
+
+    visual_style = str(layout_context.get("visual_style", "") or "").lower()
+    return {
+        "name": "Selected Attachment Theme",
+        "colors": deduped,
+        "animation": "fade" if "minimal" in visual_style else "smooth",
+    }
+
+
+def _preferred_theme_from_attachment_items(items: list[dict]) -> dict:
+    colors = []
+    for item in items:
+        summary = _attachment_item_summary(item)
+        for color in (summary.get("colors") or []):
+            color = str(color).strip()
+            if color and color not in colors:
+                colors.append(color)
+            if len(colors) >= 5:
+                break
+        if len(colors) >= 5:
+            break
+    if not colors:
+        return {}
+    return {
+        "name": "Selected Attachment Theme",
+        "colors": colors[:5],
+        "animation": "smooth",
+    }
+
+
+def _attachment_item_summary(item: dict | None) -> dict:
+    item = item or {}
+    summary = item.get("summary") or {}
+    return summary if isinstance(summary, dict) else {}
+
+
+def _merge_navigation(pages: list[dict]) -> dict:
+    primary_links = []
+    layout = ""
+    for page in pages:
+        nav = (page.get("navigation") or {}) if isinstance(page, dict) else {}
+        if not layout and nav.get("layout"):
+            layout = nav.get("layout")
+        for label in (nav.get("primary_links") or []):
+            label = str(label).strip()
+            if label and label not in primary_links:
+                primary_links.append(label)
+    return {"layout": layout, "primary_links": primary_links}
+
+
+def _build_attachment_memory_context(request: AttachmentFollowupRequest) -> tuple[dict, list[str]]:
+    context_pages = request.context_pages or []
+    components = request.components or []
+    primary = request.primary_page or {}
+    all_items = list(context_pages) + ([primary] if primary else []) + list(components)
+
+    pages = []
+    page_lines = []
+    seen_ids = set()
+
+    def add_page(item: dict, is_primary: bool = False):
+        if not isinstance(item, dict):
+            return
+        node_id = item.get("nodeId") or item.get("node_id") or ""
+        if node_id and node_id in seen_ids:
+            return
+        if node_id:
+            seen_ids.add(node_id)
+        summary = _attachment_item_summary(item)
+        name = (
+            item.get("nodeName")
+            or item.get("node_name")
+            or item.get("parentFrameName")
+            or "Screen"
+        )
+        entry = {
+            "page_id": node_id or f"selected_{len(pages) + 1}",
+            "frame_id": item.get("nodeId") or item.get("node_id") or "",
+            "name": name,
+            "screen_title": name,
+            "feature_group": summary.get("feature_group") or name.split("—")[0].strip() or name,
+            "flow_group": summary.get("feature_group") or name,
+            "width": int(item.get("width") or 1440),
+            "height": int(item.get("height") or 1080),
+            "navigation": summary.get("navigation") or {},
+            "description": summary.get("description") or "",
+            "ui_state": "selected_reference" if not is_primary else "primary_reference",
+        }
+        pages.append(entry)
+
+        line = name
+        if summary.get("description"):
+            line += " — " + str(summary.get("description")).strip()
+        page_lines.append(line)
+
+    for page in context_pages:
+        add_page(page, False)
+    add_page(primary, True)
+
+    component_lines = []
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        summary = _attachment_item_summary(component)
+        name = component.get("nodeName") or component.get("node_name") or "Component"
+        line = name
+        if summary.get("description"):
+            line += " — " + str(summary.get("description")).strip()
+        component_lines.append(line)
+
+    return {
+        "project_title": request.project_title or "Selected Project",
+        "source_prompt": request.prompt.strip(),
+        "preferred_theme": _preferred_theme_from_attachment_items(all_items) or _preferred_theme_from_layout_context(request.layout_context),
+        "navigation_model": _merge_navigation(pages),
+        "pages": pages,
+        "selected_components": component_lines,
+    }, component_lines
+
+
+def _json_for_prompt(value: object, max_chars: int = 14000) -> str:
+    raw = json.dumps(value, indent=2, ensure_ascii=True)
+    return raw if len(raw) <= max_chars else (raw[:max_chars] + "\n...TRUNCATED...")
+
+
+def _find_shell_nodes(tree: dict | None) -> dict:
+    result = {"nav": None, "secondary_nav": None, "sidebar": None, "table_like": None}
+    if not isinstance(tree, dict):
+        return result
+
+    def walk(node: dict):
+        if not isinstance(node, dict):
+            return
+        name = str(node.get("name", "") or "").lower()
+        width = int(node.get("width") or 0)
+        height = int(node.get("height") or 0)
+        x = int(node.get("x") or 0)
+        y = int(node.get("y") or 0)
+        node_type = str(node.get("type", "") or "").lower()
+
+        if not result["nav"] and any(k in name for k in ["navbar", "topbar", "header", "global nav"]) and y <= 120:
+            result["nav"] = {"name": node.get("name", ""), "x": x, "y": y, "width": width, "height": height}
+        if not result["secondary_nav"] and any(k in name for k in ["secondary nav", "tab", "sub nav", "breadcrumb"]) and y <= 220:
+            result["secondary_nav"] = {"name": node.get("name", ""), "x": x, "y": y, "width": width, "height": height}
+        if not result["sidebar"] and any(k in name for k in ["sidebar", "side nav", "left rail", "sidenav"]):
+            result["sidebar"] = {"name": node.get("name", ""), "x": x, "y": y, "width": width, "height": height}
+        if not result["table_like"] and (("table" in name) or ("grid" in name) or ("row" in name and width > 300) or node_type == "line"):
+            result["table_like"] = {"name": node.get("name", ""), "x": x, "y": y, "width": width, "height": height}
+
+        for child in (node.get("children") or []):
+            if all(result.values()):
+                break
+            walk(child)
+
+    walk(tree)
+    return result
+
+
+def _build_attachment_followup_page(request: AttachmentFollowupRequest) -> tuple[dict, str, str]:
+    primary = request.primary_page or {}
+    context_pages = request.context_pages or []
+    memory_context, component_lines = _build_attachment_memory_context(request)
+
+    source_frame_name = (
+        primary.get("nodeName")
+        or primary.get("node_name")
+        or primary.get("parentFrameName")
+        or "Primary Screen"
+    )
+    source_frame_id = (
+        primary.get("nodeId")
+        or primary.get("node_id")
+        or primary.get("parentFrameId")
+        or ""
+    )
+    width = int(primary.get("width") or 1440)
+    height = int(primary.get("height") or 1080)
+    primary_summary = _attachment_item_summary(primary)
+    primary_tree = primary.get("tree") if isinstance(primary, dict) else None
+    project_title = memory_context.get("project_title") or "Selected Project"
+    navigation = primary_summary.get("navigation") or (memory_context.get("navigation_model") or {})
+    shell_nodes = _find_shell_nodes(primary_tree)
+
+    context_lines = []
+    for item in context_pages:
+        if not isinstance(item, dict):
+            continue
+        summary = _attachment_item_summary(item)
+        name = item.get("nodeName") or item.get("node_name") or "Context Page"
+        line = name
+        if summary.get("description"):
+            line += " — " + str(summary.get("description")).strip()
+        context_lines.append(line)
+
+    page_name = f"{source_frame_name} -> Variant"
+    screen_title = request.prompt.strip()[:72] or f"{source_frame_name} Variant"
+    followup_desc = (
+        f"Generate a new page or page variant beside '{source_frame_name}' using only the selected pages and components as context. "
+        f"Do not overwrite the source page. User expectation: {request.prompt.strip()}."
+    )
+    if primary_summary.get("description"):
+        followup_desc += " Primary page summary: " + str(primary_summary.get("description")).strip()
+
+    user_prompt = (
+        f"ATTACHMENT-BASED PAGE GENERATION TASK:\n"
+        f"- Existing project title: {project_title}\n"
+        f"- Primary source screen: {source_frame_name}\n"
+        f"- Generate a brand-new page next to the source screen.\n"
+        f"- Never replace or draw on top of the source screen.\n"
+        f"- Use only the selected pages/components as context for style, shell, theme, and interaction expectations.\n"
+        f"- Keep the same header, navigation treatment, spacing rhythm, UI kit, and visual language as the attached references.\n"
+        f"- User request: {request.prompt.strip()}\n"
+    )
+    if primary_summary.get("description"):
+        user_prompt += f"\nPRIMARY PAGE:\n- {source_frame_name}: {primary_summary.get('description')}\n"
+    if context_lines:
+        user_prompt += "\nSELECTED CONTEXT PAGES:\n" + "\n".join(f"- {line}" for line in context_lines[:10]) + "\n"
+    if component_lines:
+        user_prompt += "\nSELECTED COMPONENTS:\n" + "\n".join(f"- {line}" for line in component_lines[:12]) + "\n"
+    if request.layout_context:
+        user_prompt += (
+            "\nVISUAL ANALYSIS FROM ATTACHED REFERENCES:\n"
+            f"- Layout type: {request.layout_context.get('layout_type', 'unknown')}\n"
+            f"- Visual style: {request.layout_context.get('visual_style', '')}\n"
+            f"- Color palette: {request.layout_context.get('color_palette', '')}\n"
+            f"- Sections: {', '.join(request.layout_context.get('detected_sections', []) or [])}\n"
+            f"- Components: {', '.join(request.layout_context.get('detected_components', []) or [])}\n"
+        )
+    user_prompt += (
+        "\nSTRUCTURAL ACCURACY RULES:\n"
+        f"- Preserve the primary page frame size exactly at {width}x{height}.\n"
+        "- Do not resize the global shell arbitrarily.\n"
+        "- Keep reusable shell components such as global nav, secondary nav, side panels, and repeated buttons at the same dimensions unless the prompt explicitly asks to change them.\n"
+        "- Do not flatten reusable UI into loose text. If something is a reusable button/nav/side panel/component, return it as a reusable component definition.\n"
+        "- Keep table separators, row dividers, and structural lines when they exist in the selected references.\n"
+        "- Use stable semantic naming suitable for export. Avoid random names.\n"
+    )
+    if shell_nodes.get("nav"):
+        user_prompt += f"- Global nav size lock: {shell_nodes['nav']}\n"
+    if shell_nodes.get("secondary_nav"):
+        user_prompt += f"- Secondary nav size lock: {shell_nodes['secondary_nav']}\n"
+    if shell_nodes.get("sidebar"):
+        user_prompt += f"- Sidebar size lock: {shell_nodes['sidebar']}\n"
+    if shell_nodes.get("table_like"):
+        user_prompt += f"- Table/list structure reference: {shell_nodes['table_like']}\n"
+    if primary_tree:
+        user_prompt += "\nPRIMARY PAGE TREE (compact Figma JSON):\n" + _json_for_prompt(primary_tree, 18000) + "\n"
+    if context_pages:
+        context_trees = [
+            {
+                "name": item.get("nodeName", ""),
+                "tree": item.get("tree"),
+            }
+            for item in context_pages[:4] if isinstance(item, dict) and item.get("tree")
+        ]
+        if context_trees:
+            user_prompt += "\nCONTEXT PAGE TREES (compact Figma JSON):\n" + _json_for_prompt(context_trees, 14000) + "\n"
+    if request.components:
+        component_trees = [
+            {
+                "name": item.get("nodeName", ""),
+                "tree": item.get("tree"),
+            }
+            for item in (request.components or [])[:8] if isinstance(item, dict) and item.get("tree")
+        ]
+        if component_trees:
+            user_prompt += "\nREUSABLE COMPONENT TREES (compact Figma JSON):\n" + _json_for_prompt(component_trees, 14000) + "\n"
+
+    page = {
+        "id": f"attach_followup_{int(time.time() * 1000)}",
+        "name": page_name,
+        "screen_title": screen_title,
+        "feature_group": primary_summary.get("feature_group") or source_frame_name,
+        "flow_step": 1,
+        "flow_total": 1,
+        "flow_group": page_name,
+        "flow_group_id": f"attach_followup_{re.sub(r'[^a-z0-9]+', '_', page_name.lower()).strip('_') or 'page'}",
+        "flow_group_step": 1,
+        "flow_group_total": 1,
+        "description": followup_desc,
+        "ui_state": "attachment_followup",
+        "width": width,
+        "height": height,
+        "images": [],
+        "sections": [{
+            "section_name": "Main Content",
+            "purpose": followup_desc,
+            "components": [],
+        }],
+        "click_target_keywords": list((primary_summary.get("button_labels") or [])[:4]),
+        "annotation_text": "Generated from selected pages/components",
+        "annotation_target_keywords": list((primary_summary.get("button_labels") or [])[:4]),
+        "navigation": navigation,
+        "project_navigation": memory_context.get("navigation_model") or navigation,
+        "journey": {
+            "previous_screen": source_frame_name,
+            "next_screen": "",
+            "previous_page_name": source_frame_name,
+            "next_page_name": "",
+            "branch_root": source_frame_name,
+            "branch_trigger": "selected attachments",
+            "branch_goal": request.prompt.strip(),
+            "branch_kind": "attachment_followup",
+        },
+        "branch_root": source_frame_name,
+        "branch_trigger": "selected attachments",
+        "branch_goal": request.prompt.strip(),
+        "branch_kind": "attachment_followup",
+        "memory_context": memory_context,
+        "attachment_context": {
+            "primary_tree": primary_tree,
+            "context_trees": [item.get("tree") for item in context_pages if isinstance(item, dict) and item.get("tree")][:4],
+            "component_trees": [item.get("tree") for item in (request.components or []) if isinstance(item, dict) and item.get("tree")][:8],
+            "shell_nodes": shell_nodes,
+        },
+        "followup_source_frame_id": source_frame_id,
+        "followup_source_frame_name": source_frame_name,
+    }
+    return page, project_title, user_prompt
 
 
 def _build_followup_page(request: FollowupGenerateRequest) -> tuple[dict, str, str]:

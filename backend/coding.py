@@ -16,7 +16,7 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY1"))
 
 IMAGE_PROXY_BASE = os.getenv(
     "IMAGE_PROXY_BASE",
-    "https://wingx-2vpp.onrender.com/api/image-proxy"
+    "http://localhost:9000/api/image-proxy"
 )
 
 # ─────────────────────────────────────────────────────────────────
@@ -44,6 +44,9 @@ OUTPUT RULES
 9. Coordinates must be integers.
 10. All elements must include:
    type, name, x, y
+11. Reusable UI can include:
+   componentKey, componentName
+12. Names must be semantic and stable, suitable for export. Avoid random labels like "Group 1", "Frame copy", or "Text 7".
 
 ════════════════════════════════════════
 FRAME COORDINATE SYSTEM
@@ -166,6 +169,28 @@ GROUP — related elements like nav links, skill tags, icon rows:
   ]
 }
 
+COMPONENT — reusable UI that should become a real Figma master component with instances:
+{
+  "type": "component",
+  "name": "Global Navigation",
+  "componentName": "Navigation/Global Navigation",
+  "componentKey": "navigation/global-navigation",
+  "x": 0, "y": 0,
+  "width": 1440, "height": 88,
+  "backgroundColor": "#0F172A",
+  "children": [
+    { "type": "text", "name": "Brand Label", "x": 40, "y": 28, "text": "Acme CRM", "fontSize": 24, "fontWeight": "bold", "color": "#FFFFFF" },
+    { "type": "component", "name": "Nav Item Dashboard", "componentName": "Navigation/Nav Item", "componentKey": "navigation/nav-item", "x": 1020, "y": 24, "width": 96, "height": 40, "children": [
+      { "type": "text", "name": "Nav Label", "x": 20, "y": 10, "text": "Dashboard", "fontSize": 14, "fontWeight": "medium", "color": "#E5E7EB" }
+    ] }
+  ]
+}
+
+Inside a COMPONENT, child coordinates are relative to the component's own origin, not the page origin.
+
+If the same reusable button, nav item, sidebar block, or shell component appears more than once, reuse the same componentKey/componentName.
+For reusable buttons, you may also keep type="button" and add componentKey/componentName.
+
 
 
 ════════════════════════════════════════
@@ -191,6 +216,9 @@ Right side:
 Navigation links
 
 Optional CTA button on far right.
+
+When a navbar is reusable, output it as a reusable COMPONENT and keep its links INSIDE that component.
+Navigation links should be reusable components or reusable button-like elements, not loose text floating outside the nav structure.
 
 Example nav items:
 Home
@@ -922,6 +950,320 @@ def _build_memory_block(page: dict) -> str:
     return "\nPROJECT MEMORY:\n" + "\n".join(memory_lines) + "\n"
 
 
+def _json_for_prompt(value: object, max_chars: int = 18000) -> str:
+    raw = json.dumps(value, indent=2, ensure_ascii=True)
+    return raw if len(raw) <= max_chars else (raw[:max_chars] + "\n...TRUNCATED...")
+
+
+def _build_attachment_context_block(page: dict) -> str:
+    attachment = page.get("attachment_context") or {}
+    if not attachment:
+        return ""
+
+    shell = attachment.get("shell_nodes") or {}
+    lines = [
+        "\nATTACHMENT STRUCTURE CONTEXT:",
+        "  The selected Figma trees below are the source of truth for shell/layout preservation.",
+        "  Keep the same frame dimensions, shell structure, nav sizes, and reusable component architecture unless the prompt explicitly asks for a change.",
+        "  Do not simplify real buttons/navs/panels into loose text.",
+        "  Preserve dividers, table lines, and structural separators when they are present in the reference trees.",
+        "  Emit reusable UI as COMPONENT nodes or as button nodes with componentKey/componentName.",
+    ]
+    if shell.get("nav"):
+        lines.append(f"  Global nav lock: {shell.get('nav')}")
+    if shell.get("secondary_nav"):
+        lines.append(f"  Secondary nav lock: {shell.get('secondary_nav')}")
+    if shell.get("sidebar"):
+        lines.append(f"  Sidebar lock: {shell.get('sidebar')}")
+    if shell.get("table_like"):
+        lines.append(f"  Table/list reference: {shell.get('table_like')}")
+
+    if attachment.get("primary_tree"):
+        lines.append("\nPRIMARY PAGE TREE:")
+        lines.append(_json_for_prompt(attachment.get("primary_tree"), 22000))
+    if attachment.get("context_trees"):
+        lines.append("\nCONTEXT PAGE TREES:")
+        lines.append(_json_for_prompt(attachment.get("context_trees"), 16000))
+    if attachment.get("component_trees"):
+        lines.append("\nREUSABLE COMPONENT TREES:")
+        lines.append(_json_for_prompt(attachment.get("component_trees"), 16000))
+
+    return "\n".join(lines) + "\n"
+
+
+def _slugify_component(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+    return slug or "item"
+
+
+def _pretty_component_words(value: str) -> str:
+    text = re.sub(r"\s+", " ", (value or "").replace("/", " ").replace("-", " ")).strip()
+    if not text:
+        return "Item"
+    return " ".join(part[:1].upper() + part[1:] for part in text.split(" ") if part)
+
+
+def _normalized_color(value) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if text == "transparent":
+        return "transparent"
+    if not text.startswith("#"):
+        return text
+    if len(text) == 4:
+        return "#" + "".join(ch * 2 for ch in text[1:])
+    return text
+
+
+def _estimate_text_box(text_value: str, font_size: int) -> tuple[int, int]:
+    clean = str(text_value or "").strip()
+    size = max(10, int(font_size or 16))
+    width = max(24, int(len(clean) * max(7, size * 0.55)))
+    height = max(18, int(size * 1.4))
+    return width, height
+
+
+def _collect_text_values(node: dict, limit: int = 8) -> list[str]:
+    values: list[str] = []
+
+    def walk(current: dict):
+        if len(values) >= limit or not isinstance(current, dict):
+            return
+        node_type = str(current.get("type", "")).lower()
+        if node_type in {"text", "button"}:
+            text_value = str(current.get("text", "") or "").strip()
+            if text_value:
+                values.append(text_value)
+        for child in current.get("children", []) or []:
+            if len(values) >= limit:
+                break
+            walk(child)
+
+    walk(node)
+    return values
+
+
+def _primary_label(node: dict) -> str:
+    if not isinstance(node, dict):
+        return ""
+    if str(node.get("type", "")).lower() == "button":
+        return str(node.get("text", "") or "").strip()
+    for value in _collect_text_values(node, limit=3):
+        if value:
+            return value.strip()
+    return ""
+
+
+def _button_style_variant(node: dict) -> str:
+    background = _normalized_color(node.get("backgroundColor"))
+    border = _normalized_color(node.get("borderColor"))
+    if background in {"", "transparent"}:
+        return "outline" if border else "ghost"
+    if border and background in {"#ffffff", "#f8f8f8", "#f5f5f5"}:
+        return "outline"
+    return "filled"
+
+
+def _button_kind(label: str) -> str:
+    lower = re.sub(r"\s+", " ", (label or "").strip().lower())
+    if not lower:
+        return "button"
+    for token, kind in [
+        ("cancel", "cancel"),
+        ("close", "close"),
+        ("back", "back"),
+        ("save", "save"),
+        ("submit", "submit"),
+        ("add ", "add"),
+        ("create", "create"),
+        ("edit", "edit"),
+        ("delete", "delete"),
+        ("remove", "remove"),
+        ("view", "view"),
+        ("details", "details"),
+        ("run", "run"),
+        ("assign", "assign"),
+        ("login", "login"),
+        ("sign in", "login"),
+        ("reset password", "reset-password"),
+    ]:
+        if token in lower:
+            return kind
+    return _slugify_component(lower)
+
+
+def _classify_reusable_role(node: dict, parent_role: str = "") -> str:
+    if not isinstance(node, dict):
+        return ""
+
+    node_type = str(node.get("type", "")).lower()
+    name_text = re.sub(r"\s+", " ", str(node.get("name", "") or "")).strip()
+    name_norm = name_text.lower()
+    width = int(node.get("width", 0) or 0)
+    height = int(node.get("height", 0) or 0)
+    labels = [value.lower() for value in _collect_text_values(node, limit=6)]
+    label_blob = " ".join(labels)
+
+    if node_type == "button":
+        return "button"
+
+    if node_type == "text":
+        short_text = str(node.get("text", "") or "").strip()
+        if parent_role in {"secondary-nav", "sidebar", "tabs"} and short_text and len(short_text) <= 28:
+            return "nav-item"
+        if parent_role == "global-nav" and short_text and len(short_text) <= 24 and int(node.get("x", 0) or 0) > 56:
+            return "nav-item"
+        return ""
+
+    if any(token in name_norm for token in ["sidebar", "side nav", "sidenav", "left rail"]):
+        return "sidebar"
+    if any(token in name_norm for token in ["secondary nav", "secondary navigation", "secondary tabs", "sub nav", "tabs", "tab bar"]):
+        return "secondary-nav"
+    if any(token in name_norm for token in ["global nav", "global navigation", "top nav", "top bar", "top navigation", "header nav", "navbar", "navigation/global"]):
+        return "global-nav"
+    if any(token in name_norm for token in ["side panel", "detail panel", "drawer panel"]):
+        return "side-panel"
+
+    if width >= 960 and 40 <= height <= 120 and (len(labels) >= 2 or any(token in label_blob for token in ["dashboard", "settings", "users", "delivery", "console", "results", "knowledge"])):
+        return "secondary-nav"
+    if width >= 960 and 40 <= height <= 120 and (background := _normalized_color(node.get("backgroundColor"))) and background != "transparent":
+        return "global-nav"
+    if width <= 420 and height >= 240 and any(token in label_blob for token in ["menu", "settings", "users", "roles", "permissions", "dashboard"]):
+        return "sidebar"
+
+    is_small_action = 24 <= height <= 72 and 56 <= width <= 320
+    if is_small_action:
+        label = _primary_label(node).lower()
+        if label and len(label) <= 40 and not any(token in name_norm for token in ["table", "row", "card", "panel", "nav", "sidebar"]):
+            return "button"
+
+    return ""
+
+
+def _component_variant_signature(node: dict, role: str) -> str:
+    labels = [_slugify_component(text) for text in _collect_text_values(node, limit=6)]
+    labels = [label for label in labels if label]
+    width = int(node.get("width", 0) or 0)
+    height = int(node.get("height", 0) or 0)
+    color = _normalized_color(node.get("backgroundColor"))
+
+    if role == "button":
+        label = _primary_label(node)
+        kind = _button_kind(label)
+        style = _button_style_variant(node)
+        return f"{style}/{kind}"
+
+    if role == "nav-item":
+        label = _primary_label(node) or (labels[0] if labels else "item")
+        return _slugify_component(label)
+
+    variant_parts = []
+    if role in {"secondary-nav", "sidebar"} and labels:
+        variant_parts.append("-".join(labels[:5]))
+    elif role == "global-nav":
+        variant_parts.append("-".join(labels[:4]) if labels else "")
+
+    if not variant_parts or not variant_parts[0]:
+        variant_parts = [f"{width}x{height}" if width and height else "default"]
+
+    if color and color not in {"", "transparent"}:
+        variant_parts.append(color.replace("#", ""))
+    return _slugify_component("-".join(part for part in variant_parts if part))
+
+
+def _apply_component_identity(node: dict, role: str) -> dict:
+    updated = dict(node)
+    variant = _component_variant_signature(updated, role)
+
+    if role == "button":
+        label = _primary_label(updated) or updated.get("name") or "Button"
+        kind = _button_kind(label)
+        updated["componentName"] = f"Actions/{_pretty_component_words(kind)} Button"
+        updated["componentKey"] = f"actions/button/{variant}"
+        updated["name"] = updated.get("name") or f"{_pretty_component_words(kind)} Button"
+        return updated
+
+    if role == "nav-item":
+        label = _primary_label(updated) or updated.get("name") or "Nav Item"
+        updated["componentName"] = f"Navigation/Nav Item/{_pretty_component_words(label)}"
+        updated["componentKey"] = f"navigation/nav-item/{variant}"
+        updated["name"] = updated.get("name") or f"Nav Item {label}"
+        return updated
+
+    component_meta = {
+        "global-nav": ("Navigation/Global Top Bar", "navigation/global-top-bar"),
+        "secondary-nav": ("Navigation/Secondary Nav", "navigation/secondary-nav"),
+        "sidebar": ("Navigation/Sidebar", "navigation/sidebar"),
+        "side-panel": ("Layout/Side Panel", "layout/side-panel"),
+    }.get(role)
+    if component_meta:
+        comp_name, comp_key = component_meta
+        updated["componentName"] = f"{comp_name}/{_pretty_component_words(variant)}"
+        updated["componentKey"] = f"{comp_key}/{variant}"
+        return updated
+
+    return updated
+
+
+def _wrap_text_as_component(node: dict, parent_role: str) -> dict:
+    label = str(node.get("text", "") or "").strip()
+    if not label:
+        return dict(node)
+
+    font_size = int(node.get("fontSize", 16) or 16)
+    width = int(node.get("width", 0) or 0)
+    height = int(node.get("height", 0) or 0)
+    if width <= 0 or height <= 0:
+        est_w, est_h = _estimate_text_box(label, font_size)
+        width = width or est_w
+        height = height or est_h
+
+    child = dict(node)
+    child["x"] = 0
+    child["y"] = 0
+
+    wrapped = {
+        "type": "component",
+        "name": f"Nav Item {label}",
+        "componentName": f"Navigation/Nav Item/{_pretty_component_words(label)}",
+        "componentKey": f"navigation/nav-item/{_slugify_component(label)}",
+        "x": int(node.get("x", 0) or 0),
+        "y": int(node.get("y", 0) or 0),
+        "width": max(1, width),
+        "height": max(1, height),
+        "backgroundColor": "transparent",
+        "children": [child],
+    }
+    if parent_role == "sidebar":
+        wrapped["componentName"] = f"Navigation/Sidebar Item/{_pretty_component_words(label)}"
+        wrapped["componentKey"] = f"navigation/sidebar-item/{_slugify_component(label)}"
+    return wrapped
+
+
+def enforce_reusable_structure(children: list, parent_role: str = "") -> list:
+    normalized = []
+    for el in children:
+        if not isinstance(el, dict):
+            continue
+
+        updated = dict(el)
+        role = _classify_reusable_role(updated, parent_role)
+
+        if isinstance(updated.get("children"), list):
+            updated["children"] = enforce_reusable_structure(updated["children"], role or parent_role)
+
+        if role == "nav-item" and str(updated.get("type", "")).lower() == "text":
+            updated = _wrap_text_as_component(updated, parent_role)
+            role = "nav-item"
+
+        if role and str(updated.get("type", "")).lower() not in {"image", "line"}:
+            updated = _apply_component_identity(updated, role)
+
+        normalized.append(updated)
+    return normalized
+
+
 def stabilize_generated_children(children: list) -> list:
     stabilized = []
     for el in children:
@@ -1202,6 +1544,7 @@ async def generate_page_nodes(page: dict, project_title: str, user_prompt: str, 
     navigation_block = _build_navigation_block(page)
     journey_block = _build_journey_block(page)
     memory_block = _build_memory_block(page)
+    attachment_block = _build_attachment_context_block(page)
 
     is_product_ui = bool(
         page.get("feature_group") or
@@ -1251,6 +1594,7 @@ USER REQUEST: {user_prompt}
 {navigation_block}
 {journey_block}
 {memory_block}
+{attachment_block}
 {layout_fit_block}
 {screenshot_guidance_block}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1299,6 +1643,7 @@ Generate the children array now. Output ONLY the JSON array.
 
     children = parse_coding_response(raw, page_name)
     children = sanitize_generated_children(children)
+    children = enforce_reusable_structure(children)
     children = stabilize_generated_children(children)
     children = inject_image_urls(children)
 

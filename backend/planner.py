@@ -1793,6 +1793,115 @@ def _build_plan_from_states(ui_states: list, user_prompt: str) -> dict:
     title = "CRM System" if "crm" in user_prompt.lower() else "Product Design"
     return {"project_title": title, "total_pages": len(pages), "pages": pages}
 
+
+def _required_screen_specs(content_context: dict | None) -> list[dict]:
+    if not content_context:
+        return []
+
+    required = []
+    seen = set()
+    instruction_map = {}
+
+    for item in (content_context.get("screen_instructions") or []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "") or "").strip()
+        instruction = str(item.get("instruction", "") or "").strip()
+        key = _norm_text(name)
+        if not key:
+            continue
+        if instruction:
+            instruction_map[key] = instruction
+
+    candidates = []
+    candidates.extend(content_context.get("pages_or_screens") or [])
+    candidates.extend(item.get("name", "") for item in (content_context.get("screen_instructions") or []) if isinstance(item, dict))
+
+    for raw in candidates:
+        name = re.sub(r"\s+", " ", str(raw or "").strip(" -–—:"))
+        norm = _norm_text(name)
+        if not norm or norm in seen:
+            continue
+        if len(name) > 80:
+            continue
+        if any(token in norm for token in ["click ", "when ", "should ", "must ", "allow ", "user can ", "workflow ", "journey "]):
+            continue
+        if len(norm.split()) > 10:
+            continue
+        seen.add(norm)
+        required.append({
+            "name": name,
+            "instruction": instruction_map.get(norm, ""),
+        })
+
+    return required
+
+
+def _screen_feature_and_title(name: str) -> tuple[str, str]:
+    clean = re.sub(r"\s+", " ", (name or "").strip(" -–—:"))
+    if not clean:
+        return "Feature", "State"
+
+    if "—" in clean:
+        left, right = [part.strip() for part in clean.split("—", 1)]
+        return _clean_feature_label(left), _pretty_title(right)
+    if " - " in clean:
+        left, right = [part.strip() for part in clean.split(" - ", 1)]
+        return _clean_feature_label(left), _pretty_title(right)
+
+    norm = _norm_text(clean)
+    if any(token in norm for token in ["login", "sign in", "signin", "forgot password", "reset password", "register", "signup", "auth"]):
+        return "Authentication", _pretty_title(clean)
+    return _clean_feature_label(clean), _pretty_title(clean)
+
+
+def _ensure_required_document_pages(pages: list[dict], content_context: dict | None) -> list[dict]:
+    if not pages or not content_context:
+        return pages
+
+    existing = set()
+    for page in pages:
+        for value in [page.get("name", ""), page.get("screen_title", ""), page.get("feature_group", "")]:
+            norm = _norm_text(str(value or ""))
+            if norm:
+                existing.add(norm)
+
+    missing_pages = []
+    for idx, spec in enumerate(_required_screen_specs(content_context), start=1):
+        norm_name = _norm_text(spec["name"])
+        if not norm_name or norm_name in existing:
+            continue
+
+        feature_group, screen_title = _screen_feature_and_title(spec["name"])
+        description = spec["instruction"] or f"Required screen from the source requirements: {screen_title}."
+        page_id = f"required_{idx}_{re.sub(r'[^a-z0-9]+', '_', norm_name).strip('_') or 'screen'}"
+        page_name = screen_title if _norm_text(feature_group) == _norm_text(screen_title) else f"{feature_group} — {screen_title}"
+        missing_pages.append({
+            "id": page_id,
+            "name": page_name,
+            "screen_title": screen_title,
+            "description": description,
+            "ui_state": "document_required",
+            "feature_group": feature_group,
+            "flow_step": 1,
+            "flow_total": 1,
+            "click_target_keywords": [],
+            "annotation_text": "Added from requirements coverage safeguard",
+            "annotation_target_keywords": [],
+            "width": 1440,
+            "height": 1080,
+            "sections": [{
+                "section_name": "Main Content",
+                "purpose": description,
+                "components": [],
+            }],
+            "images": [],
+        })
+        existing.add(norm_name)
+        log.warn("PLANNER", f"Added missing required screen from content context: {page_name!r}")
+
+    return pages + missing_pages
+
 async def run_planner(
     user_prompt: str,
     layout_context: dict = None,
@@ -1820,6 +1929,7 @@ async def run_planner(
                 user_prompt=user_prompt,
                 content_context=content_context,
             )
+        parsed["pages"] = _ensure_required_document_pages(parsed["pages"], content_context)
         parsed["pages"] = _normalise_pages(parsed["pages"])
         parsed["total_pages"] = len(parsed["pages"])
         log.success("PLANNER",
@@ -1875,6 +1985,7 @@ async def run_planner(
 
             cleaned_states = _cleanup_flow_states(ui_states)
             parsed = _build_plan_from_states(cleaned_states or ui_states, user_prompt)
+            parsed["pages"] = _ensure_required_document_pages(parsed["pages"], content_context)
             parsed["pages"] = _normalise_pages(parsed["pages"])
             parsed["pages"], parsed["navigation_model"] = _attach_project_structure(parsed["pages"])
             parsed["total_pages"] = len(parsed["pages"])
@@ -1917,6 +2028,7 @@ async def run_planner(
     log.debug("PLANNER", f"Raw response: {len(raw_text)} chars")
 
     parsed = parse_plan(raw_text)
+    parsed["pages"] = _ensure_required_document_pages(parsed["pages"], content_context)
     parsed["pages"] = _normalise_pages(_cleanup_flow_states(parsed["pages"]) or parsed["pages"])
     parsed["pages"], parsed["navigation_model"] = _attach_project_structure(parsed["pages"])
     parsed["total_pages"] = len(parsed["pages"])
