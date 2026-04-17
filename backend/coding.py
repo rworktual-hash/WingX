@@ -22,7 +22,7 @@ CODING_LOG_FILE = os.getenv("FIGMA_LOG_FILENAME", "figma_debug.log")
 
 IMAGE_PROXY_BASE = os.getenv(
     "IMAGE_PROXY_BASE",
-    "http://localhost:9000/api/image-proxy"
+    "https://wingx-2vpp.onrender.com/api/image-proxy"
 )
 
 

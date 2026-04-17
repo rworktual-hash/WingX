@@ -42,6 +42,7 @@ backend/__pycache__/
 
 /logs/
 logs/
+
 backend/logs/
 
 
