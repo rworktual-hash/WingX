@@ -31,8 +31,17 @@ tsconfig.json
 code1.js
 package.json
 ui1.html
-
+code.ts
+.gitignore
+WingX_mar31.zip
 
 /__pycache__/
 __pycache__/
+
+backend/__pycache__/
+
+/logs/
+logs/
+backend/logs/
+
 

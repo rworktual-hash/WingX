@@ -2261,7 +2261,8 @@ THEMES = [
 def select_themes_for_prompt(prompt: str, max_themes: int = 5) -> list:
     """
     Given a user prompt, return a list of up to `max_themes` theme dictionaries
-    that are relevant to the prompt. Includes exact matches and category matches.
+    that are relevant to the prompt. If the user explicitly names a theme, preserve it.
+    Otherwise, randomize from the full library instead of locking by domain/category.
     """
     prompt_lower = prompt.lower()
     
@@ -2272,43 +2273,29 @@ def select_themes_for_prompt(prompt: str, max_themes: int = 5) -> list:
             mentioned_themes.append(theme)
     
     if mentioned_themes:
-        # If user explicitly named themes, prioritize them and fill with similar category
-        categories = {t["category"] for t in mentioned_themes}
-        similar = []
-        for cat in categories:
-            similar.extend([t for t in THEMES if t["category"] == cat and t not in mentioned_themes])
-        # Shuffle and limit
-        random.shuffle(similar)
-        result = mentioned_themes + similar[:max_themes - len(mentioned_themes)]
-        return result[:max_themes]
-    
-    # Otherwise, score by keyword matches
-    scores = {}
+        remaining = [t for t in THEMES if t not in mentioned_themes]
+        random.shuffle(remaining)
+        return (mentioned_themes + remaining)[:max_themes]
+
+    unique_themes = []
+    seen = set()
     for theme in THEMES:
-        score = 0
-        # Check category keywords
-        cat_keywords = THEME_CATEGORIES[theme["category"]]["keywords"]
-        for kw in cat_keywords:
-            if kw in prompt_lower:
-                score += 1
-        # Check theme description
-        for word in theme["description"].lower().split():
-            if word in prompt_lower:
-                score += 0.5
-        scores[theme["name"]] = score
-    
-    # Sort by score descending
-    sorted_themes = sorted(THEMES, key=lambda t: scores[t["name"]], reverse=True)
-    # Return top themes, but ensure at least a few
-    top = [t for t in sorted_themes if scores[t["name"]] > 0][:max_themes]
-    if len(top) < max_themes:
-        # Fill with random themes from diverse categories
-        needed = max_themes - len(top)
-        existing_cats = {t["category"] for t in top}
-        candidates = [t for t in THEMES if t["category"] not in existing_cats and t not in top]
-        random.shuffle(candidates)
-        top.extend(candidates[:needed])
-    return top[:max_themes]
+        key = (
+            theme.get("name", ""),
+            theme.get("category", ""),
+            tuple(theme.get("colors", []) or []),
+            theme.get("animation", ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_themes.append(theme)
+
+    if len(unique_themes) <= max_themes:
+        random.shuffle(unique_themes)
+        return unique_themes
+
+    return random.sample(unique_themes, max_themes)
 
 def format_themes_for_prompt(themes: list) -> str:
     """Format theme list as a readable block for the AI prompt."""

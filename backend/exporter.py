@@ -617,6 +617,7 @@ def _render_node(
     comp_map: dict = None,
     used_components: set = None,
     scale: str = "scale",
+    parent_auto_layout: bool = False,
 ) -> str:
     if not isinstance(node, dict): return ""
     if not _is_visible(node):      return ""
@@ -632,17 +633,17 @@ def _render_node(
         return _render_asset_image(node, indent, scale)
 
     if node_type == "rectangle":
-        return _render_rectangle(node, indent, scale)
+        return _render_rectangle(node, indent, scale, parent_auto_layout)
     if node_type == "text":
-        return _render_text(node, indent, scale, all_routes, nav_context, page_name)
+        return _render_text(node, indent, scale, all_routes, nav_context, page_name, parent_auto_layout)
     if node_type == "image":
-        return _render_image(node, indent, scale)
+        return _render_image(node, indent, scale, parent_auto_layout)
     if node_type == "button":
-        return _render_button(node, indent, all_routes, nav_context, page_name, scale)
+        return _render_button(node, indent, all_routes, nav_context, page_name, scale, parent_auto_layout)
     if node_type == "line":
-        return _render_line(node, indent, scale)
+        return _render_line(node, indent, scale, parent_auto_layout)
     if node_type in ("ellipse", "vector"):
-        return _render_vector(node, indent, scale)
+        return _render_vector(node, indent, scale, parent_auto_layout)
     if node_type == "scroller" or node.get("comp_type") == "scroller":
         x = node.get("x", 0); y = node.get("y", 0)
         w = node.get("width", 200); h = node.get("height", 20)
@@ -657,7 +658,7 @@ def _render_node(
         )
     if node_type in ("group", "frame", "component", "instance") or node.get("children"):
         return _render_container(node, all_routes, nav_context, page_name,
-                                 indent, depth, comp_map, used_components, scale)
+                                 indent, depth, comp_map, used_components, scale, parent_auto_layout)
     return ""
 
 
@@ -702,7 +703,49 @@ def _render_asset_image(node: dict, indent: str, scale: str = "scale") -> str:
     )
 
 
-def _render_rectangle(node: dict, indent: str, scale: str = "scale") -> str:
+def _has_explicit_size(node: dict, key: str) -> bool:
+    value = node.get(key)
+    return isinstance(value, (int, float)) and value > 0
+
+
+def _layout_sizing(node: dict, axis: str) -> str:
+    key = "layoutSizingHorizontal" if axis == "horizontal" else "layoutSizingVertical"
+    value = str(node.get(key, "") or "").upper()
+    return value if value in {"FIXED", "HUG", "FILL"} else ""
+
+
+def _append_flow_sizing(styles: list[str], node: dict, scale: str) -> None:
+    has_width = _has_explicit_size(node, "width")
+    has_height = _has_explicit_size(node, "height")
+    layout_h = _layout_sizing(node, "horizontal")
+    layout_v = _layout_sizing(node, "vertical")
+    layout_grow = node.get("layoutGrow", 0)
+    min_width = node.get("minWidth", 0)
+    min_height = node.get("minHeight", 0)
+
+    if has_width:
+        styles.append(f"width: `calc({node.get('width')}px * ${{{scale}}})`")
+    elif layout_h == "FILL" or layout_grow:
+        styles.append("flex: '1 1 0'")
+        styles.append("minWidth: '0'")
+    else:
+        styles.append("width: 'fit-content'")
+        styles.append("maxWidth: '100%'")
+
+    if has_height:
+        styles.append(f"height: `calc({node.get('height')}px * ${{{scale}}})`")
+    elif layout_v == "FILL":
+        styles.append("alignSelf: 'stretch'")
+    else:
+        styles.append("height: 'fit-content'")
+
+    if isinstance(min_width, (int, float)) and min_width > 0:
+        styles.append(f"minWidth: `calc({min_width}px * ${{{scale}}})`")
+    if isinstance(min_height, (int, float)) and min_height > 0:
+        styles.append(f"minHeight: `calc({min_height}px * ${{{scale}}})`")
+
+
+def _render_rectangle(node: dict, indent: str, scale: str = "scale", parent_auto_layout: bool = False) -> str:
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 100);  h = node.get("height", 40)
     bg = node.get("backgroundColor", "")
@@ -712,13 +755,18 @@ def _render_rectangle(node: dict, indent: str, scale: str = "scale") -> str:
     bc       = node.get("borderColor", "");  bw = node.get("borderWidth", 0)
     name  = _safe_comment(node.get("name", "rect"))
 
-    sp = [
-        f"position: 'absolute'",
-        f"left: `calc({x}px * ${{{scale}}})`",
-        f"top: `calc({y}px * ${{{scale}}})`",
-        f"width: `calc({w}px * ${{{scale}}})`",
-        f"height: `calc({h}px * ${{{scale}}})`",
-    ]
+    sp = [f"boxSizing: 'border-box'"]
+    if parent_auto_layout:
+        sp.append("position: 'relative'")
+        _append_flow_sizing(sp, node, scale)
+    else:
+        sp.extend([
+            f"position: 'absolute'",
+            f"left: `calc({x}px * ${{{scale}}})`",
+            f"top: `calc({y}px * ${{{scale}}})`",
+            f"width: `calc({w}px * ${{{scale}}})`",
+            f"height: `calc({h}px * ${{{scale}}})`",
+        ])
     if gradient:   sp.append(f"background: '{gradient}'")
     elif bg and bg not in ("transparent", ""): sp.append(f"backgroundColor: '{bg}'")
     if radius:     sp.append(f"borderRadius: `calc({radius}px * ${{{scale}}})`")
@@ -738,38 +786,51 @@ def _render_rectangle(node: dict, indent: str, scale: str = "scale") -> str:
     return f"{indent}{{/* {name} */}}\n{indent}<div style={{{{ {style} }}}} />"
 
 
-def _render_line(node: dict, indent: str, scale: str = "scale") -> str:
+def _render_line(node: dict, indent: str, scale: str = "scale", parent_auto_layout: bool = False) -> str:
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 100)
     bg = node.get("backgroundColor", node.get("color", "#CCCCCC"))
     sw = node.get("strokeWeight", node.get("height", 1))
-    sp = [
-        f"position: 'absolute'",
-        f"left: `calc({x}px * ${{{scale}}})`",
-        f"top: `calc({y}px * ${{{scale}}})`",
-        f"width: `calc({w}px * ${{{scale}}})`",
-        f"height: `calc({sw}px * ${{{scale}}})`",
-    ]
+    sp = [f"boxSizing: 'border-box'"]
+    if parent_auto_layout:
+        sp.extend([
+            "position: 'relative'",
+            f"width: `calc({w}px * ${{{scale}}})`",
+            f"height: `calc({sw}px * ${{{scale}}})`",
+        ])
+    else:
+        sp.extend([
+            f"position: 'absolute'",
+            f"left: `calc({x}px * ${{{scale}}})`",
+            f"top: `calc({y}px * ${{{scale}}})`",
+            f"width: `calc({w}px * ${{{scale}}})`",
+            f"height: `calc({sw}px * ${{{scale}}})`",
+        ])
     if bg and bg not in ("transparent", ""): sp.append(f"backgroundColor: '{bg}'")
     return f"{indent}<div style={{{{ {', '.join(sp)} }}}} />"
 
 
-def _render_vector(node: dict, indent: str, scale: str = "scale") -> str:
+def _render_vector(node: dict, indent: str, scale: str = "scale", parent_auto_layout: bool = False) -> str:
     if node.get("imageHash"):
-        return _render_image(node, indent, scale)
+        return _render_image(node, indent, scale, parent_auto_layout)
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 40);  h = node.get("height", 40)
     bg = node.get("backgroundColor", "")
     radius  = 9999 if node.get("type", "").lower() == "ellipse" else node.get("cornerRadius", 0)
     opacity = node.get("opacity", 1)
     bc = node.get("borderColor", "");  bw = node.get("borderWidth", 0)
-    sp = [
-        f"position: 'absolute'",
-        f"left: `calc({x}px * ${{{scale}}})`",
-        f"top: `calc({y}px * ${{{scale}}})`",
-        f"width: `calc({w}px * ${{{scale}}})`",
-        f"height: `calc({h}px * ${{{scale}}})`",
-    ]
+    sp = [f"boxSizing: 'border-box'"]
+    if parent_auto_layout:
+        sp.append("position: 'relative'")
+        _append_flow_sizing(sp, node, scale)
+    else:
+        sp.extend([
+            f"position: 'absolute'",
+            f"left: `calc({x}px * ${{{scale}}})`",
+            f"top: `calc({y}px * ${{{scale}}})`",
+            f"width: `calc({w}px * ${{{scale}}})`",
+            f"height: `calc({h}px * ${{{scale}}})`",
+        ])
     if bg and bg not in ("transparent", ""): sp.append(f"backgroundColor: '{bg}'")
     if radius:    sp.append(f"borderRadius: `calc({radius}px * ${{{scale}}})`" if radius < 9999 else "borderRadius: '50%'")
     if opacity != 1: sp.append(f"opacity: {opacity}")
@@ -779,8 +840,9 @@ def _render_vector(node: dict, indent: str, scale: str = "scale") -> str:
 
 
 def _render_text(node: dict, indent: str, scale: str = "scale",
-                 all_routes: list = None, nav_context: dict = None, page_name: str = "") -> str:
-    x  = node.get("x", 0);  y = node.get("y", 0);  w = node.get("width", 200)
+                 all_routes: list = None, nav_context: dict = None, page_name: str = "",
+                 parent_auto_layout: bool = False) -> str:
+    x  = node.get("x", 0);  y = node.get("y", 0);  w = node.get("width", 0)
     h  = node.get("height", 0)
     raw_text       = node.get("text", "")
     font_size      = node.get("fontSize", 16)
@@ -790,21 +852,39 @@ def _render_text(node: dict, indent: str, scale: str = "scale",
     letter_spacing = node.get("letterSpacing", 0)
     opacity        = node.get("opacity", 1)
     text_align     = node.get("textAlign", node.get("textAlignHorizontal", "left")).lower()
+    text_align_vertical = str(node.get("textAlignVertical", "top") or "top").lower()
     is_nav_link    = node.get("isNavLink", False)
 
     tag = "h1" if font_size >= 64 else "h2" if font_size >= 42 else "h3" if font_size >= 28 else "h4" if font_size >= 20 else "p"
 
     sp = [
-        f"position: 'absolute'",
-        f"left: `calc({x}px * ${{{scale}}})`",
-        f"top: `calc({y}px * ${{{scale}}})`",
-        f"width: `calc({w}px * ${{{scale}}})`",
         f"fontSize: `calc({font_size}px * ${{{scale}}})`",
         f"fontWeight: {font_weight}",
         f"lineHeight: {line_height}",
-        f"margin: '0'", f"padding: '0'", f"boxSizing: 'border-box'",
+        f"margin: '0'",
+        f"padding: '0'",
+        f"boxSizing: 'border-box'",
     ]
-    if h: sp.append(f"maxHeight: `calc({h}px * ${{{scale}}})`")
+    if parent_auto_layout:
+        _append_flow_sizing(sp, node, scale)
+    else:
+        sp.extend([
+            f"position: 'absolute'",
+            f"left: `calc({x}px * ${{{scale}}})`",
+            f"top: `calc({y}px * ${{{scale}}})`",
+        ])
+        if _has_explicit_size(node, "width"):
+            sp.append(f"width: `calc({w}px * ${{{scale}}})`")
+        else:
+            sp.append("width: 'fit-content'")
+            sp.append("maxWidth: '100%'")
+        if h:
+            sp.append(f"minHeight: `calc({h}px * ${{{scale}}})`")
+
+    if h and text_align_vertical in {"center", "bottom"}:
+        align_map = {"center": "center", "bottom": "flex-end"}
+        sp.append("display: 'flex'")
+        sp.append(f"alignItems: '{align_map[text_align_vertical]}'")
     if color and color not in ("transparent", ""): sp.append(f"color: '{color}'")
     if text_align in ("center", "right", "justify"): sp.append(f"textAlign: '{text_align}'")
     if letter_spacing: sp.append(f"letterSpacing: `calc({letter_spacing}px * ${{{scale}}})`")
@@ -831,7 +911,7 @@ def _render_text(node: dict, indent: str, scale: str = "scale",
             )
 
     return f"{indent}{{/* {name} */}}\n{indent}<{tag} style={{{{ {style} }}}}>{inner}</{tag}>"
-def _render_image(node: dict, indent: str, scale: str = "scale") -> str:
+def _render_image(node: dict, indent: str, scale: str = "scale", parent_auto_layout: bool = False) -> str:
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 400);  h = node.get("height", 300)
     src        = node.get("src", "")
@@ -842,18 +922,23 @@ def _render_image(node: dict, indent: str, scale: str = "scale") -> str:
     opacity    = node.get("opacity", 1)
     name       = _safe_comment(node.get("name", "image"))
 
-    IMAGE_PROXY = "https://wingx-2vpp.onrender.com/api/image-proxy"
+    IMAGE_PROXY = "http://localhost:9000/api/image-proxy"
 
     if image_hash and (not src or src in ("", "PLACEHOLDER") or src.startswith("FIGMA_IMAGE:")):
         src = f"{IMAGE_PROXY}?hash={image_hash}"
 
-    base = [
-        f"position: 'absolute'",
-        f"left: `calc({x}px * ${{{scale}}})`",
-        f"top: `calc({y}px * ${{{scale}}})`",
-        f"width: `calc({w}px * ${{{scale}}})`",
-        f"height: `calc({h}px * ${{{scale}}})`",
-    ]
+    base = [f"boxSizing: 'border-box'"]
+    if parent_auto_layout:
+        base.append("position: 'relative'")
+        _append_flow_sizing(base, node, scale)
+    else:
+        base.extend([
+            f"position: 'absolute'",
+            f"left: `calc({x}px * ${{{scale}}})`",
+            f"top: `calc({y}px * ${{{scale}}})`",
+            f"width: `calc({w}px * ${{{scale}}})`",
+            f"height: `calc({h}px * ${{{scale}}})`",
+        ])
     if radius:      base.append(f"borderRadius: `calc({radius}px * ${{{scale}}})`")
     if opacity != 1: base.append(f"opacity: {opacity}")
 
@@ -889,6 +974,7 @@ def _render_button(
     node: dict, indent: str,
     all_routes: list[dict], nav_context: dict, page_name: str,
     scale: str = "scale",
+    parent_auto_layout: bool = False,
 ) -> str:
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 160);  h = node.get("height", 48)
@@ -904,11 +990,6 @@ def _render_button(
     name = _safe_comment(node_name)
 
     sp = [
-        f"position: 'absolute'",
-        f"left: `calc({x}px * ${{{scale}}})`",
-        f"top: `calc({y}px * ${{{scale}}})`",
-        f"width: `calc({w}px * ${{{scale}}})`",
-        f"height: `calc({h}px * ${{{scale}}})`",
         f"borderRadius: `calc({radius}px * ${{{scale}}})`",
         f"fontSize: `calc({font_size}px * ${{{scale}}})`",
         f"fontWeight: {font_weight}",
@@ -921,6 +1002,16 @@ def _render_button(
         f"whiteSpace: 'nowrap'",
         f"outline: 'none'",
     ]
+    if parent_auto_layout:
+        _append_flow_sizing(sp, node, scale)
+    else:
+        sp = [
+            f"position: 'absolute'",
+            f"left: `calc({x}px * ${{{scale}}})`",
+            f"top: `calc({y}px * ${{{scale}}})`",
+            f"width: `calc({w}px * ${{{scale}}})`",
+            f"height: `calc({h}px * ${{{scale}}})`",
+        ] + sp
     if bc and int(bw) > 0:
         sp.append(f"border: `${{Math.round({bw}*{scale})}}px solid {bc}`")
     else:
@@ -976,6 +1067,7 @@ def _render_container(
     indent: str, depth: int,
     comp_map: dict, used_components: set,
     scale: str = "scale",
+    parent_auto_layout: bool = False,
 ) -> str:
     x  = node.get("x", 0);  y = node.get("y", 0)
     w  = node.get("width", 0);  h = node.get("height", 0)
@@ -996,7 +1088,7 @@ def _render_container(
 
     image_hash     = node.get("imageHash", "")
     has_image_fill = node.get("imageFill", False) and bool(image_hash)
-    IMAGE_PROXY    = "https://wingx-2vpp.onrender.com/api/image-proxy"
+    IMAGE_PROXY    = "http://localhost:9000/api/image-proxy"
 
     # ── Bug 1 fix ─────────────────────────────────────────────────
     # A FRAME/COMPONENT node in Figma defines its OWN coordinate space.
@@ -1014,13 +1106,32 @@ def _render_container(
     # For GROUP nodes, Figma children coords are also local, so same fix applies.
     has_children = bool(node.get("children"))
 
-    cp_outer = [
-        f"position: 'absolute'",
-        f"left: `calc({x}px * ${{{scale}}})`",
-        f"top: `calc({y}px * ${{{scale}}})`",
-        f"width: `calc({w}px * ${{{scale}}})`",
-        f"height: `calc({h}px * ${{{scale}}})`",
-    ]
+    layout_mode = node.get("layoutMode", "")
+    uses_flow_children = layout_mode in ("HORIZONTAL", "VERTICAL")
+
+    cp_outer = [f"boxSizing: 'border-box'"]
+    if parent_auto_layout:
+        cp_outer.append("position: 'relative'")
+        _append_flow_sizing(cp_outer, node, scale)
+    else:
+        cp_outer.extend([
+            f"position: 'absolute'",
+            f"left: `calc({x}px * ${{{scale}}})`",
+            f"top: `calc({y}px * ${{{scale}}})`",
+        ])
+        if _has_explicit_size(node, "width"):
+            cp_outer.append(f"width: `calc({w}px * ${{{scale}}})`")
+        elif uses_flow_children:
+            cp_outer.append("width: 'fit-content'")
+            cp_outer.append("maxWidth: '100%'")
+        else:
+            cp_outer.append("width: '0px'")
+        if _has_explicit_size(node, "height"):
+            cp_outer.append(f"height: `calc({h}px * ${{{scale}}})`")
+        elif uses_flow_children:
+            cp_outer.append("height: 'fit-content'")
+        else:
+            cp_outer.append("height: '0px'")
     if has_image_fill:
         proxy_url = f"{IMAGE_PROXY}?hash={image_hash}"
         cp_outer += [
@@ -1049,7 +1160,6 @@ def _render_container(
         if br_w: cp_outer.append(f"borderRight: `${{Math.round({br_w} * {scale})}}px solid {br_c}`")
 
     # ── Auto-layout → flexbox ──────────────────────────────────
-    layout_mode = node.get("layoutMode", "")
     if layout_mode in ("HORIZONTAL", "VERTICAL"):
         flex_dir   = "row" if layout_mode == "HORIZONTAL" else "column"
         axis_map   = {"MIN": "flex-start", "CENTER": "center", "MAX": "flex-end", "SPACE_BETWEEN": "space-between"}
@@ -1069,6 +1179,15 @@ def _render_container(
         if pb:   cp_outer.append(f"paddingBottom: `calc({pb}px * ${{{scale}}})`")
         if pl:   cp_outer.append(f"paddingLeft: `calc({pl}px * ${{{scale}}})`")
         if pr:   cp_outer.append(f"paddingRight: `calc({pr}px * ${{{scale}}})`")
+    if isinstance(node.get("layoutGrow"), (int, float)) and node.get("layoutGrow"):
+        cp_outer.append(f"flexGrow: {int(node.get('layoutGrow', 0))}")
+    layout_align = node.get("layoutAlign", "")
+    if layout_align == "STRETCH":
+        cp_outer.append("alignSelf: 'stretch'")
+    elif layout_align == "CENTER":
+        cp_outer.append("alignSelf: 'center'")
+    elif layout_align == "MAX":
+        cp_outer.append("alignSelf: 'flex-end'")
 
     # Nav link detection
     target = _resolve_nav(node.get("name", ""), "", page_name, nav_context, all_routes)
@@ -1101,8 +1220,17 @@ def _render_container(
         if minimize_state_key and _is_minimize_node(child):
             child = dict(child)                          # shallow copy — don't mutate original
             child["_minimize_key"] = minimize_state_key
-        jsx = _render_node(child, all_routes, nav_context, page_name,
-                           depth + 1, comp_map, used_components, scale)
+        jsx = _render_node(
+            child,
+            all_routes,
+            nav_context,
+            page_name,
+            depth + 1,
+            comp_map,
+            used_components,
+            scale,
+            uses_flow_children,
+        )
         if jsx:
             child_lines.append(jsx)
 
@@ -1111,7 +1239,7 @@ def _render_container(
     # ── Build the two-layer structure ─────────────────────────────
     # Outer div: absolute positioned at x/y, sized w/h, has bg/radius/overflow
     # Inner div: position relative, same w/h — children anchor to THIS origin
-    if has_children:
+    if has_children and not uses_flow_children:
         inner_style = (
             f"position: 'relative', "
             f"width: '100%', "
@@ -1151,6 +1279,14 @@ def _render_container(
             f"{indent}  <div style={{{{ {inner_style} }}}}>\n"
             f"{children_str}\n"
             f"{indent}  </div>\n"
+            f"{indent}</div>"
+        )
+
+    if has_children and uses_flow_children:
+        return (
+            f"{indent}{{/* {name} */}}\n"
+            f"{indent}<div style={{{{ {outer_style} }}}}{click_attr}{hover_attr}>\n"
+            f"{children_str}\n"
             f"{indent}</div>"
         )
 

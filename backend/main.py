@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import ast
 import time
 import datetime
 from fastapi import FastAPI, HTTPException
@@ -12,6 +13,7 @@ from planner  import run_planner
 from coding   import generate_page_nodes
 from analyzer import run_analyze, AnalyzeRequest
 from context_builder import run_context_builder, ContextBuildRequest
+from themes import select_themes_for_prompt
 import logger as log
 from llm_utils import generate_content_with_retry
 
@@ -62,10 +64,16 @@ class AttachmentFollowupRequest(BaseModel):
     screenshot_media_type: Optional[str] = "image/png"
     project_title:         Optional[str] = None
 
+
+class FigmaJsonImportRequest(BaseModel):
+    figma_json:            str
+    project_title:         Optional[str] = None
+
 # ─────────────────────────────────────────────────────────────────
 # /  —  Health check
 # ─────────────────────────────────────────────────────────────────
 @app.get("/")
+@app.get("/health")
 def health():
     log.info("HEALTH", "Health check requested")
     return {"status": "running"}
@@ -128,6 +136,43 @@ async def plan_route(request: PromptRequest):
     )
 
 
+@app.post("/import-figma-json")
+async def import_figma_json(request: FigmaJsonImportRequest):
+    raw_input = (request.figma_json or "").strip()
+    if not raw_input:
+        raise HTTPException(status_code=400, detail="Figma JSON cannot be empty")
+
+    try:
+        parsed = _parse_lenient_json(raw_input)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    frames = _extract_design_frames_from_figma_json(parsed)
+    if not frames:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Could not find any frame-like nodes in the provided JSON. "
+                "Paste a Figma frame, a frames array, or a full Figma document JSON."
+            ),
+        )
+
+    project_title = (
+        (request.project_title or "").strip()
+        or _infer_project_title_from_import(parsed, frames)
+        or "Imported Figma Design"
+    )
+
+    return JSONResponse({
+        "success": True,
+        "project_title": project_title,
+        "source_format": _detect_import_source_format(parsed),
+        "design": {"frames": frames},
+        "frame_count": len(frames),
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+    })
+
+
 # ─────────────────────────────────────────────────────────────────
 # /generate — SSE stream, one page at a time, children chunked
 # ─────────────────────────────────────────────────────────────────
@@ -156,6 +201,7 @@ async def generate(request: PromptRequest):
             yield sse_log(log.success("GENERATE",
                 f"Plan ready: {plan['project_title']!r} ({plan['total_pages']} pages)"
             ))
+
             yield sse("plan_ready", {
                 "project_title": plan["project_title"],
                 "total_pages":   plan["total_pages"],
@@ -163,12 +209,21 @@ async def generate(request: PromptRequest):
             })
 
             total = plan["total_pages"]
-            pages = plan["pages"]
+
+            shared_memory_context = _build_generation_memory_context(
+                prompt=request.prompt,
+                plan=plan,
+                memory_context=request.memory_context,
+                layout_context=request.layout_context,
+            )
+
+            pages = _apply_generation_memory_context(plan["pages"], shared_memory_context)
 
             yield sse("status", {
                 "message":     f"Generating all {total} frame(s) simultaneously (max 3 at once)...",
                 "total_pages": total,
             })
+
             for i, page in enumerate(pages):
                 yield sse_log(log.info("GENERATE",
                     f"[{i+1}/{total}] Queued: {page['name']!r}"
@@ -192,6 +247,7 @@ async def generate(request: PromptRequest):
                             screenshot_media_type=request.screenshot_media_type or "image/png",
                         )
                         await result_queue.put((index, page, result, None))
+                        
                     except Exception as exc:
                         await result_queue.put((index, page, None, exc))
 
@@ -244,6 +300,7 @@ async def generate(request: PromptRequest):
                     yield sse("page_start", {
                         "page_id":        res["page_id"],
                         "page_name":      res["page_name"],
+                        "project_title":  plan["project_title"],
                         "page_number":    n,
                         "total_pages":    total,
                         "theme": {
@@ -361,9 +418,16 @@ async def generate_full(request: PromptRequest):
         user_prompt=request.prompt,
         content_context=request.content_context,
     )
+    shared_memory_context = _build_generation_memory_context(
+        prompt=request.prompt,
+        plan=plan,
+        memory_context=request.memory_context,
+        layout_context=request.layout_context,
+    )
+    plan_pages = _apply_generation_memory_context(plan["pages"], shared_memory_context)
     frames = []
 
-    for i, page in enumerate(plan["pages"]):
+    for i, page in enumerate(plan_pages):
         try:
             result = await generate_page_nodes(
                 page=page,
@@ -436,6 +500,7 @@ async def generate_followup(request: FollowupGenerateRequest):
             yield sse("page_start", {
                 "page_id": result["page_id"],
                 "page_name": result["page_name"],
+                "project_title": project_title,
                 "page_number": 1,
                 "total_pages": 1,
                 "theme": {
@@ -560,6 +625,7 @@ async def generate_attachment_followup(request: AttachmentFollowupRequest):
             yield sse("page_start", {
                 "page_id": result["page_id"],
                 "page_name": result["page_name"],
+                "project_title": project_title,
                 "page_number": 1,
                 "total_pages": 1,
                 "theme": {
@@ -897,6 +963,7 @@ Generate ONE complete React component that renders the full page.
 
 Write the complete JSX file now.
 """
+
 
 def _make_routes(pages: list[dict]) -> list[dict]:
     routes = []
@@ -1421,6 +1488,489 @@ def _gen_css() -> str:
     )
 
 
+
+def _detect_import_source_format(data: object) -> str:
+    if isinstance(data, dict):
+        if isinstance(data.get("design"), dict):
+            return "wingx_design"
+        if isinstance(data.get("frames"), list):
+            return "frames_array"
+        if str(data.get("type", "")).upper() in {"DOCUMENT", "CANVAS", "FRAME", "GROUP", "COMPONENT", "INSTANCE"}:
+            return "figma_node"
+    if isinstance(data, list):
+        return "node_array"
+    return "unknown"
+
+
+def _parse_lenient_json(raw_input: str):
+    text = (raw_input or "").strip()
+    if not text:
+        raise ValueError("Figma JSON cannot be empty")
+
+    candidates = []
+
+    base = _strip_code_fences(text)
+    candidates.append(base)
+
+    cleaned = _cleanup_loose_json(base)
+    if cleaned != base:
+        candidates.append(cleaned)
+
+    quoted_keys = _quote_unquoted_object_keys(cleaned)
+    if quoted_keys not in candidates:
+        candidates.append(quoted_keys)
+
+    js_literal = _to_python_literal(quoted_keys)
+    if js_literal not in candidates:
+        candidates.append(js_literal)
+
+    errors = []
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except Exception as exc:
+            errors.append(str(exc))
+
+        try:
+            return ast.literal_eval(candidate)
+        except Exception as exc:
+            errors.append(str(exc))
+
+    detail = errors[0] if errors else "Unsupported JSON-like input"
+    raise ValueError(f"Invalid JSON: {detail}")
+
+
+def _strip_code_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json|javascript|js|ts|tsx|python)?\s*", "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"\s*```$", "", stripped)
+    return stripped.strip()
+
+
+def _cleanup_loose_json(text: str) -> str:
+    cleaned = text.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
+    cleaned = re.sub(r"//.*?$", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+    return cleaned.strip()
+
+
+def _quote_unquoted_object_keys(text: str) -> str:
+    pattern = re.compile(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_\-]*)(\s*:)')
+    previous = None
+    updated = text
+    while updated != previous:
+        previous = updated
+        updated = pattern.sub(r'\1"\2"\3', updated)
+    return updated
+
+
+def _to_python_literal(text: str) -> str:
+    converted = re.sub(r"\btrue\b", "True", text, flags=re.IGNORECASE)
+    converted = re.sub(r"\bfalse\b", "False", converted, flags=re.IGNORECASE)
+    converted = re.sub(r"\bnull\b", "None", converted, flags=re.IGNORECASE)
+    return converted
+
+
+def _infer_project_title_from_import(data: object, frames: list[dict]) -> str:
+    if isinstance(data, dict):
+        for key in ("project_title", "projectTitle", "name", "title"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        document = data.get("document")
+        if isinstance(document, dict):
+            value = document.get("name")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    for frame in frames:
+        name = frame.get("name") or frame.get("frame", {}).get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return ""
+
+
+def _extract_design_frames_from_figma_json(data: object) -> list[dict]:
+    if isinstance(data, dict):
+        design = data.get("design")
+        if isinstance(design, dict) and isinstance(design.get("frames"), list):
+            return [_normalize_design_frame(frame, idx) for idx, frame in enumerate(design["frames"])]
+
+        if isinstance(data.get("frames"), list):
+            return [_normalize_design_frame(frame, idx) for idx, frame in enumerate(data["frames"])]
+
+        if isinstance(data.get("document"), dict):
+            frames = _extract_frames_from_node_tree(data["document"])
+            return [_normalize_design_frame(frame, idx) for idx, frame in enumerate(frames)]
+
+        if _looks_like_figma_node(data):
+            return [_normalize_design_frame(data, 0)]
+
+        discovered = _discover_frame_like_nodes(data)
+        if discovered:
+            return [_normalize_design_frame(frame, idx) for idx, frame in enumerate(discovered)]
+
+    if isinstance(data, list):
+        direct_frames = [
+            _normalize_design_frame(frame, idx)
+            for idx, frame in enumerate(data)
+            if isinstance(frame, dict) and (_looks_like_figma_node(frame) or _is_frame_like_node(frame))
+        ]
+        if direct_frames:
+            return direct_frames
+        discovered = _discover_frame_like_nodes(data)
+        if discovered:
+            return [_normalize_design_frame(frame, idx) for idx, frame in enumerate(discovered)]
+
+    return []
+
+
+def _discover_frame_like_nodes(data: object) -> list[dict]:
+    found: list[dict] = []
+    seen: set[int] = set()
+
+    def walk(value: object):
+        obj_id = id(value)
+        if obj_id in seen:
+            return
+        seen.add(obj_id)
+
+        if isinstance(value, dict):
+            if _is_frame_like_node(value):
+                found.append(value)
+                # Do not descend further once we have a concrete frame-like container.
+                return
+
+            for nested in value.values():
+                if isinstance(nested, (dict, list)):
+                    walk(nested)
+
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, (dict, list)):
+                    walk(item)
+
+    walk(data)
+
+    deduped: list[dict] = []
+    deduped_ids: set[int] = set()
+    for item in found:
+        item_id = id(item)
+        if item_id not in deduped_ids:
+            deduped.append(item)
+            deduped_ids.add(item_id)
+    return deduped
+
+
+def _extract_frames_from_node_tree(node: dict) -> list[dict]:
+    node_type = str(node.get("type", "")).upper()
+    children = node.get("children", [])
+    frames = []
+
+    if node_type in {"FRAME", "COMPONENT", "INSTANCE", "GROUP"}:
+        frames.append(node)
+
+    if isinstance(children, list):
+        for child in children:
+            if isinstance(child, dict):
+                frames.extend(_extract_frames_from_node_tree(child))
+
+    return frames
+
+
+def _looks_like_figma_node(node: dict) -> bool:
+    node_type = str(node.get("type", "")).upper()
+    return node_type in {
+        "DOCUMENT", "CANVAS", "FRAME", "GROUP", "COMPONENT", "INSTANCE", "TEXT",
+        "RECTANGLE", "ELLIPSE", "LINE", "VECTOR", "BOOLEAN_OPERATION"
+    } or "children" in node
+
+
+def _is_frame_like_node(node: dict) -> bool:
+    node_type = str(node.get("type", "")).upper()
+    if node_type in {"FRAME", "GROUP", "COMPONENT", "INSTANCE"}:
+        return True
+
+    children = node.get("children")
+    if not isinstance(children, list) or not children:
+        return False
+
+    if any(key in node for key in ("absoluteBoundingBox", "width", "height", "layoutMode", "backgroundColor", "fills")):
+        return True
+
+    name = str(node.get("name", "")).strip()
+    if name and len(children) >= 1:
+        return True
+
+    return False
+
+
+def _normalize_design_frame(frame: dict, index: int) -> dict:
+    if isinstance(frame.get("frame"), dict):
+        inner = frame["frame"]
+        frame_name = frame.get("name") or inner.get("name") or f"Frame {index + 1}"
+        return {
+            "name": frame_name,
+            "frame": {
+                "type": str(inner.get("type", "frame")).lower(),
+                "name": inner.get("name") or frame_name,
+                "width": _coerce_number(inner.get("width"), 1440),
+                "height": _coerce_number(inner.get("height"), 900),
+                "backgroundColor": _extract_background_color(inner, "#FFFFFF"),
+                "children": [_normalize_node(child) for child in inner.get("children", []) if isinstance(child, dict)],
+            },
+        }
+
+    node_name = frame.get("name") or f"Frame {index + 1}"
+    return {
+        "name": node_name,
+        "frame": {
+            "type": str(frame.get("type", "frame")).lower(),
+            "name": node_name,
+            "width": _coerce_number(frame.get("width"), 1440),
+            "height": _coerce_number(frame.get("height"), 900),
+            "backgroundColor": _extract_background_color(frame, "#FFFFFF"),
+            "children": [_normalize_node(child) for child in frame.get("children", []) if isinstance(child, dict)],
+        },
+    }
+
+
+def _normalize_node(node: dict) -> dict:
+    node_type = _map_figma_node_type(node)
+    normalized = {
+        "type": node_type,
+        "name": node.get("name") or node_type.title(),
+        "x": _coerce_number(node.get("x"), _coerce_number(_nested_lookup(node, "absoluteBoundingBox.x"), 0)),
+        "y": _coerce_number(node.get("y"), _coerce_number(_nested_lookup(node, "absoluteBoundingBox.y"), 0)),
+        "width": _coerce_number(node.get("width"), _coerce_number(_nested_lookup(node, "absoluteBoundingBox.width"), 0)),
+        "height": _coerce_number(node.get("height"), _coerce_number(_nested_lookup(node, "absoluteBoundingBox.height"), 0)),
+    }
+
+    background = _extract_background_color(node, None) if node_type != "text" else None
+    if background is not None:
+        normalized["backgroundColor"] = background
+
+    border_color = _extract_stroke_color(node)
+    if border_color is not None:
+        normalized["borderColor"] = border_color
+        normalized["borderWidth"] = _coerce_number(node.get("strokeWeight"), 1)
+        normalized["strokeColor"] = border_color
+        normalized["strokeWeight"] = _coerce_number(node.get("strokeWeight"), 1)
+
+    corner_radius = node.get("cornerRadius")
+    if corner_radius is None:
+        corner_radius = _nested_lookup(node, "rectangleCornerRadii.0")
+    if corner_radius is not None:
+        normalized["cornerRadius"] = _coerce_number(corner_radius, 0)
+
+    opacity = node.get("opacity")
+    if opacity is not None:
+        normalized["opacity"] = opacity
+
+    if node_type == "text":
+        normalized["text"] = _extract_text_value(node)
+        normalized["fontSize"] = _coerce_number(_nested_lookup(node, "style.fontSize"), 16)
+        font_weight = _nested_lookup(node, "style.fontWeight")
+        if font_weight is not None:
+            normalized["fontWeight"] = font_weight
+        normalized["color"] = _extract_text_color(node, "#111111")
+        line_height = _extract_line_height(node)
+        if line_height is not None:
+            normalized["lineHeight"] = line_height
+        letter_spacing = _nested_lookup(node, "style.letterSpacing")
+        if letter_spacing is not None:
+            normalized["letterSpacing"] = _coerce_number(letter_spacing, 0)
+
+    if node_type == "button":
+        normalized["text"] = _extract_button_text(node)
+        normalized["textColor"] = _extract_text_color(node, "#FFFFFF")
+        normalized["fontSize"] = _coerce_number(_nested_lookup(node, "style.fontSize"), 14)
+        font_weight = _nested_lookup(node, "style.fontWeight")
+        if font_weight is not None:
+            normalized["fontWeight"] = font_weight
+
+    if node_type == "image":
+        image_ref = node.get("src") or node.get("imageRef") or node.get("imageHash")
+        if image_ref:
+            normalized["src"] = image_ref
+
+    layout_mode = _extract_layout_mode(node)
+    if layout_mode:
+        normalized["layoutMode"] = layout_mode
+        normalized["itemSpacing"] = _coerce_number(node.get("itemSpacing"), 0)
+        normalized["paddingLeft"] = _coerce_number(node.get("paddingLeft"), 0)
+        normalized["paddingRight"] = _coerce_number(node.get("paddingRight"), 0)
+        normalized["paddingTop"] = _coerce_number(node.get("paddingTop"), 0)
+        normalized["paddingBottom"] = _coerce_number(node.get("paddingBottom"), 0)
+        if node.get("primaryAxisAlignItems") is not None:
+            normalized["primaryAxisAlignItems"] = node.get("primaryAxisAlignItems")
+        if node.get("counterAxisAlignItems") is not None:
+            normalized["counterAxisAlignItems"] = node.get("counterAxisAlignItems")
+
+    children = node.get("children")
+    if isinstance(children, list) and children:
+        normalized["children"] = [_normalize_node(child) for child in children if isinstance(child, dict)]
+
+    return normalized
+
+
+def _map_figma_node_type(node: dict) -> str:
+    raw = str(node.get("type", "")).upper()
+    name = str(node.get("name", "")).lower()
+
+    if raw == "TEXT":
+        return "text"
+    if raw in {"FRAME", "COMPONENT", "INSTANCE"}:
+        if "button" in name:
+            return "button"
+        return raw.lower()
+    if raw in {"RECTANGLE", "VECTOR", "BOOLEAN_OPERATION"}:
+        if node.get("imageRef") or node.get("imageHash") or node.get("src"):
+            return "image"
+        if "button" in name:
+            return "button"
+        return "rectangle"
+    if raw == "ELLIPSE":
+        return "ellipse"
+    if raw == "LINE":
+        return "line"
+    if raw == "GROUP":
+        return "group"
+    return raw.lower() if raw else "frame"
+
+
+def _extract_layout_mode(node: dict) -> str:
+    mode = node.get("layoutMode")
+    if isinstance(mode, str) and mode.upper() in {"HORIZONTAL", "VERTICAL"}:
+        return mode.upper()
+    return ""
+
+
+def _extract_text_value(node: dict) -> str:
+    for key in ("characters", "text", "content"):
+        value = node.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _extract_button_text(node: dict) -> str:
+    direct = _extract_text_value(node)
+    if direct.strip():
+        return direct
+    for child in node.get("children", []) or []:
+        if isinstance(child, dict):
+            child_text = _extract_text_value(child)
+            if child_text.strip():
+                return child_text
+    return node.get("name") or "Button"
+
+
+def _extract_line_height(node: dict) -> float | None:
+    line_height_px = _nested_lookup(node, "style.lineHeightPx")
+    font_size = _nested_lookup(node, "style.fontSize")
+    if line_height_px and font_size:
+        font_size = _coerce_number(font_size, 16)
+        if font_size:
+            return round(_coerce_number(line_height_px, font_size) / font_size, 2)
+    line_height_percent = _nested_lookup(node, "style.lineHeightPercentFontSize")
+    if line_height_percent:
+        return round(_coerce_number(line_height_percent, 140) / 100, 2)
+    return None
+
+
+def _extract_text_color(node: dict, fallback: str) -> str:
+    fills = node.get("fills")
+    if isinstance(fills, list):
+        for fill in fills:
+            if isinstance(fill, dict) and str(fill.get("type", "")).upper() == "SOLID":
+                return _figma_color_to_hex(fill.get("color"), fallback, fill.get("opacity"))
+    return fallback
+
+
+def _extract_background_color(node: dict, fallback: str | None) -> str | None:
+    direct = node.get("backgroundColor")
+    if isinstance(direct, str) and direct.strip():
+        return direct
+
+    backgrounds = node.get("background")
+    if isinstance(backgrounds, list):
+        for fill in backgrounds:
+            if isinstance(fill, dict) and str(fill.get("type", "")).upper() == "SOLID":
+                return _figma_color_to_hex(fill.get("color"), fallback or "#FFFFFF", fill.get("opacity"))
+
+    fills = node.get("fills")
+    if isinstance(fills, list):
+        for fill in fills:
+            if not isinstance(fill, dict) or fill.get("visible") is False:
+                continue
+            fill_type = str(fill.get("type", "")).upper()
+            if fill_type == "SOLID":
+                return _figma_color_to_hex(fill.get("color"), fallback or "#FFFFFF", fill.get("opacity"))
+
+    return fallback
+
+
+def _extract_stroke_color(node: dict) -> str | None:
+    strokes = node.get("strokes")
+    if isinstance(strokes, list):
+        for stroke in strokes:
+            if not isinstance(stroke, dict) or stroke.get("visible") is False:
+                continue
+            if str(stroke.get("type", "")).upper() == "SOLID":
+                return _figma_color_to_hex(stroke.get("color"), "#000000", stroke.get("opacity"))
+    return None
+
+
+def _figma_color_to_hex(color: object, fallback: str, opacity: object = None) -> str:
+    if not isinstance(color, dict):
+        return fallback
+    r = _channel_to_hex(color.get("r"))
+    g = _channel_to_hex(color.get("g"))
+    b = _channel_to_hex(color.get("b"))
+    if r is None or g is None or b is None:
+        return fallback
+
+    if opacity is not None and opacity != 1:
+        a = _channel_to_hex(opacity)
+        if a is not None:
+            return f"#{r}{g}{b}{a}"
+    return f"#{r}{g}{b}"
+
+
+def _channel_to_hex(value: object) -> str | None:
+    if not isinstance(value, (int, float)):
+        return None
+    if 0 <= value <= 1:
+        value = round(value * 255)
+    value = max(0, min(255, int(round(value))))
+    return f"{value:02X}"
+
+
+def _nested_lookup(data: dict, path: str):
+    current = data
+    for part in path.split("."):
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list) and part.isdigit():
+            index = int(part)
+            current = current[index] if 0 <= index < len(current) else None
+        else:
+            return None
+        if current is None:
+            return None
+    return current
+
+
+def _coerce_number(value: object, fallback: int | float) -> int | float:
+    if isinstance(value, (int, float)):
+        return int(value) if isinstance(fallback, int) else float(value)
+    return fallback
+
+
 # ─────────────────────────────────────────────────────────────────
 # SSE HELPERS
 # ─────────────────────────────────────────────────────────────────
@@ -1521,6 +2071,99 @@ def _preferred_theme_from_attachment_items(items: list[dict]) -> dict:
         "colors": colors[:5],
         "animation": "smooth",
     }
+
+
+def _default_project_theme() -> dict:
+    return {
+        "name": "Dark Pro",
+        "category": "dark",
+        "colors": ["#111111", "#1A1A1A", "#4F46E5", "#818CF8", "#FFFFFF"],
+        "animation": "fade",
+        "description": "Dark background with indigo accent",
+    }
+
+
+def _resolve_project_theme(prompt: str, memory_context: dict | None = None, layout_context: dict | None = None) -> dict:
+    memory_context = memory_context or {}
+    existing = memory_context.get("preferred_theme") or {}
+    if existing.get("colors"):
+        return existing
+
+    attachment_theme = _preferred_theme_from_layout_context(layout_context)
+    if attachment_theme.get("colors"):
+        return attachment_theme
+
+    themes = select_themes_for_prompt(prompt or "", max_themes=1)
+    selected_theme = themes[0] if themes else _default_project_theme()
+    return {
+        "name": selected_theme.get("name", "Project Theme"),
+        "category": selected_theme.get("category", "custom"),
+        "colors": list(selected_theme.get("colors", []) or _default_project_theme()["colors"]),
+        "animation": selected_theme.get("animation", "fade"),
+        "description": selected_theme.get("description", ""),
+    }
+
+
+def _build_generation_memory_context(
+    prompt: str,
+    plan: dict,
+    memory_context: dict | None = None,
+    layout_context: dict | None = None,
+) -> dict:
+    # Top-level "new design" generation must start fresh.
+    # We intentionally do not carry prior project memory here,
+    # otherwise a stopped/previous run can leak theme/navigation/pages
+    # into an unrelated new prompt.
+    base = {}
+    base["project_title"] = plan.get("project_title") or "Product Design"
+    base["source_prompt"] = prompt.strip()
+    base["navigation_model"] = plan.get("navigation_model") or {}
+    base["preferred_theme"] = _resolve_project_theme(prompt, base, layout_context)
+
+    snapshot_pages = []
+    for page in (plan.get("pages") or []):
+        if not isinstance(page, dict):
+            continue
+        snapshot_pages.append({
+            "page_id": page.get("id", ""),
+            "frame_id": page.get("frame_id", ""),
+            "name": page.get("name", ""),
+            "screen_title": page.get("screen_title", page.get("name", "")),
+            "feature_group": page.get("feature_group", ""),
+            "flow_group": page.get("flow_group", ""),
+            "width": int(page.get("width") or 1440),
+            "height": int(page.get("height") or 1080),
+            "navigation": page.get("navigation") or {},
+            "description": page.get("description") or "",
+            "ui_state": page.get("ui_state") or "",
+        })
+    if snapshot_pages:
+        base["pages"] = snapshot_pages
+
+    return base
+
+
+def _apply_generation_memory_context(pages: list[dict], shared_memory_context: dict) -> list[dict]:
+    enriched_pages = []
+    for page in pages or []:
+        page_copy = dict(page or {})
+        page_memory = dict(shared_memory_context)
+        existing_page_memory = page_copy.get("memory_context") or {}
+        if existing_page_memory:
+            page_memory.update(existing_page_memory)
+            if shared_memory_context.get("preferred_theme"):
+                page_memory["preferred_theme"] = shared_memory_context["preferred_theme"]
+            if shared_memory_context.get("navigation_model"):
+                page_memory["navigation_model"] = shared_memory_context["navigation_model"]
+            if shared_memory_context.get("pages"):
+                page_memory["pages"] = shared_memory_context["pages"]
+            if shared_memory_context.get("project_title"):
+                page_memory["project_title"] = shared_memory_context["project_title"]
+            if shared_memory_context.get("source_prompt"):
+                page_memory["source_prompt"] = shared_memory_context["source_prompt"]
+        page_copy["memory_context"] = page_memory
+        enriched_pages.append(page_copy)
+    return enriched_pages
 
 
 def _attachment_item_summary(item: dict | None) -> dict:

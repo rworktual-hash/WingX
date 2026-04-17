@@ -7,21 +7,45 @@ from dotenv import load_dotenv
 
 from themes import select_themes_for_prompt
 from llm_utils import generate_content_with_retry
+from log_writer import write_log
 import logger as log
 
 load_dotenv()
 
 planner_model = os.getenv("GEMINI_PLANNER_MODEL")
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY1"))
+CODING_LAYOUT_TEXT_LIMIT = int(os.getenv("CODING_LAYOUT_TEXT_LIMIT", "240"))
+CODING_ATTACHMENT_PRIMARY_LIMIT = int(os.getenv("CODING_ATTACHMENT_PRIMARY_LIMIT", "9000"))
+CODING_ATTACHMENT_CONTEXT_LIMIT = int(os.getenv("CODING_ATTACHMENT_CONTEXT_LIMIT", "6000"))
+CODING_ATTACHMENT_COMPONENT_LIMIT = int(os.getenv("CODING_ATTACHMENT_COMPONENT_LIMIT", "6000"))
+CODING_LOG_FILE = os.getenv("FIGMA_LOG_FILENAME", "figma_debug.log")
 
 IMAGE_PROXY_BASE = os.getenv(
     "IMAGE_PROXY_BASE",
-    "https://wingx-2vpp.onrender.com/api/image-proxy"
+    "http://localhost:9000/api/image-proxy"
 )
+
+
+def _write_linewise_log(section: str, content, filename: str = CODING_LOG_FILE):
+    text = str(content or "")
+    lines = text.splitlines() or [text]
+    write_log(f"{section} | BEGIN", filename=filename)
+    for line in lines:
+        write_log(f"{section} | {line}", filename=filename)
+    write_log(f"{section} | END", filename=filename)
+
+
+def _write_json_log(section: str, payload, filename: str = CODING_LOG_FILE):
+    try:
+        text = json.dumps(payload, indent=2, ensure_ascii=False)
+    except Exception:
+        text = str(payload)
+    _write_linewise_log(section, text, filename=filename)
 
 # ─────────────────────────────────────────────────────────────────
 # SYSTEM PROMPT
 # ─────────────────────────────────────────────────────────────────
+
 CODING_SYSTEM_PROMPT = """
 You are a senior UI/UX designer generating a professional Figma page layout.
 
@@ -30,9 +54,9 @@ Your task is to generate a JSON array of UI elements that will become the "child
 The layout must resemble a modern, real production website.
 It may also represent a real product screen, dashboard, CRM, inbox, modal, or application view.
 
-════════════════════════════════════════
-OUTPUT RULES
-════════════════════════════════════════
+
+OUTPUT RULES:
+------------
 1. Output ONLY a valid JSON array.
 2. Do NOT output markdown.
 3. Do NOT output explanations.
@@ -47,11 +71,40 @@ OUTPUT RULES
 11. Reusable UI can include:
    componentKey, componentName
 12. Names must be semantic and stable, suitable for export. Avoid random labels like "Group 1", "Frame copy", or "Text 7".
+13. Button text must be fit to the button size.
+14. The provided text content must be in the centre of components.
+15. Always must be provide the high quality Ui design based on the user requirements.
+16. Product UI pages must include meaningful primary content beyond the navbar or shell.
+17. Do NOT output a nearly empty canvas, blank form shell, or placeholder-only screen.
+18. Do NOT generate unwanted intermediary trigger pages. Show the actual resulting state for the planned step.
+19. Do NOT reuse footer/legal/copyright text as table rows, form values, card content, or dashboard data.
+20. Footer/legal text such as "Terms of Service", "Privacy Policy", or "All rights reserved" may appear at most once in a true footer area only, never repeated inside main content.
+21. For user-management tables, rows must contain person-like data such as names, emails, roles, statuses, timestamps, and actions.
+22. For bot/dashboard tables, rows must contain bot-like data such as bot names, statuses, phases, timestamps, metrics, or actions.
+23. Do NOT fill tables, lists, or cards with repeated shell copy, navigation labels, or legal/footer text.
+24. Menus, dropdowns, and popovers must be visually anchored near the trigger that opened them. Do NOT place them as detached floating cards far from the related row/button.
+25. Table screens must keep one shared column model across header and body rows. Do NOT duplicate toolbar controls inside data rows.
+26. Option cards, role cards, and selection cards must have enough height and text width for both title and description without clipping.
 
-════════════════════════════════════════
-FRAME COORDINATE SYSTEM
-════════════════════════════════════════
 
+SAMPLE IMAGE REFERENCE:
+----------------------
+1. If user attached the existing website image or figma design for reference mean analyze those image and extract the colours from those images then based on that generate the new requirement figma design.
+
+Example:
+  Nav Bar color
+  Icons
+  logo(if user mentioned as a logo png or any formate for logo fitting)
+  footer
+  Button size
+  Button colour
+  Theams 
+  Background colour
+  Image generation
+
+
+FRAME COORDINATE SYSTEM:
+-----------------------
 The frame origin is top-left:
 
 x = 0
@@ -72,9 +125,8 @@ Do NOT shrink a full app screen into a tiny centered layout.
 If the screenshot includes empty space around the UI, ignore that padding and recreate the actual site/app surface at full size.
 Never reproduce screenshot chrome, capture background, editor canvas, or outer framing that sits outside the real product UI.
 
-════════════════════════════════════════
-VERTICAL SPACING SYSTEM
-════════════════════════════════════════
+VERTICAL SPACING SYSTEM:
+-----------------------
 
 Use a consistent spacing rhythm:
 
@@ -83,23 +135,48 @@ Medium spacing: 32
 Large spacing: 64
 Section spacing: 120
 
-Sections should start roughly every 600–900px vertically.
+Sections should start roughly every 600-900px vertically.
 
 Avoid cramped layouts.
 
-══════════════════════════════════════════
 ELEMENT TYPES:
-══════════════════════════════════════════
+--------------
 
-RECTANGLE — backgrounds, cards, dividers, overlays:
+FRAME — the primary layout container for generated UI blocks:
+Use `frame` for navbars, cards, forms, lists, rows, columns, panels, filters, sections, settings blocks, and any structure that should behave like CSS flexbox.
+{
+  "type": "frame",
+  "name": "Profile Card",
+  "x": 120, "y": 200,
+  "width": 360, "height": 220,
+  "backgroundColor": "#FFFFFF",
+  "cornerRadius": 16,
+  "layoutMode": "VERTICAL",
+  "itemSpacing": 12,
+  "paddingLeft": 16,
+  "paddingRight": 16,
+  "paddingTop": 16,
+  "paddingBottom": 16,
+  "primaryAxisAlignItems": "MIN",
+  "counterAxisAlignItems": "MIN",
+  "primaryAxisSizingMode": "AUTO",
+  "counterAxisSizingMode": "AUTO",
+  "children": [
+    { "type": "text", "name": "Card Title", "x": 0, "y": 0, "text": "Profile Card", "fontSize": 16, "fontWeight": "bold", "color": "#111111" },
+    { "type": "text", "name": "Card Copy", "x": 0, "y": 0, "width": 280, "text": "This card grows automatically when content changes.", "fontSize": 14, "color": "#5B6270" },
+    { "type": "button", "name": "Primary Action", "x": 0, "y": 0, "width": 132, "height": 44, "text": "View Profile", "backgroundColor": "#4F46E5", "textColor": "#FFFFFF", "cornerRadius": 10, "fontSize": 14, "fontWeight": "medium" }
+  ]
+}
+
+RECTANGLE — decorative/background-only shapes, dividers, overlays:
+Never use `rectangle` as the main layout container for cards, navbars, forms, lists, sections, or button groups.
 {
   "type": "rectangle",
-  "name": "Card Background",
+  "name": "Section Divider",
   "x": 120, "y": 200,
-  "width": 580, "height": 320,
-  "backgroundColor": "#1A1A1A",
-  "cornerRadius": 16,
-  "opacity": 1
+  "width": 1200, "height": 1,
+  "backgroundColor": "#D1D5DB",
+  "opacity": 0.3
 }
 
 TEXT — headings, body, labels, captions:
@@ -129,6 +206,7 @@ IMAGE — photos, thumbnails, illustrations:
 }
 
 BUTTON — CTAs, nav buttons, outlined links:
+Buttons are leaf UI components. Their internal Auto Layout is handled by the plugin renderer.
   Filled:
   {
     "type": "button",
@@ -158,7 +236,8 @@ BUTTON — CTAs, nav buttons, outlined links:
     "fontWeight": "medium"
   }
 
-GROUP — related elements like nav links, skill tags, icon rows:
+GROUP — only for tightly coupled visual/icon clusters when a real layout container is not needed:
+Do not use `group` for cards, navbars, forms, lists, rows, columns, or reusable layout blocks. Use `frame` or `component` instead.
 {
   "type": "group",
   "name": "Skill Tags",
@@ -191,11 +270,45 @@ Inside a COMPONENT, child coordinates are relative to the component's own origin
 If the same reusable button, nav item, sidebar block, or shell component appears more than once, reuse the same componentKey/componentName.
 For reusable buttons, you may also keep type="button" and add componentKey/componentName.
 
+AUTO LAYOUT REQUIREMENTS
+------------------------
 
+Generated UI must use Auto Layout-style structure wherever appropriate.
 
-════════════════════════════════════════
+- Use `frame` or `component` as the container for all real UI components.
+- Prefer a clear layout hierarchy for app/product screens:
+  top-level app shell -> horizontal Auto Layout with sidebar + main content
+  main content -> vertical Auto Layout with topbar + content sections
+  content sections -> vertical Auto Layout for cards/tables/chat/forms/lists
+  rows/navbars/toolbars -> horizontal Auto Layout
+- Use `layoutMode: "HORIZONTAL"` for rows:
+  navbars, tab rows, button rows, filter bars, segmented controls, list rows with left/right content
+- Use `layoutMode: "VERTICAL"` for stacked layouts:
+  cards, forms, lists, sidebars, modals, settings sections, content columns
+- Add `itemSpacing` and padding on every layout container.
+- Prefer nested Auto Layout:
+  example: card frame -> vertical, action row frame -> horizontal, button inside action row
+- Use explicit sizing for compact UI and renderer-sensitive elements:
+  icons, badges, pills, avatar chips, compact buttons, input controls, and dense status wrappers -> explicit `width` and `height`
+- Use `layoutSizingHorizontal: "HUG"` and `layoutSizingVertical: "HUG"` only when the content is not a critical compact control and the parent layout does not depend on fragile text measurement.
+- Use `layoutSizingHorizontal: "FILL"` for flexible children that should expand inside parent rows/columns.
+- If a container relies on padding plus text size to create its final shape, prefer a fixed-size wrapper instead of a pure HUG container.
+- Use `layoutGrow: 1` on children that should fill the remaining horizontal/vertical space within an Auto Layout parent.
+- Use `primaryAxisAlignItems: "SPACE_BETWEEN"` for navbars and rows where left and right content should stay aligned at opposite edges.
+- Children inside Auto Layout containers should usually have `x: 0` and `y: 0`.
+- Remove manual positioning inside Auto Layout containers. Use `itemSpacing`, padding, nested frames, and `SPACE_BETWEEN` instead of hand-placing children.
+- Do not mix absolute positioning with Auto Layout for normal UI layouts.
+- Add `minWidth` and `minHeight` to important containers such as cards, panels, tables, chat sections, and sidebars to prevent collapsing.
+- Wrap small UI elements such as badges, pills, and compact buttons inside their own Auto Layout frames instead of placing raw text directly in larger rows.
+- Do not build cards/forms/lists/navbars from loose rectangles and loose text when a frame/container is appropriate.
+- Think in CSS flexbox terms: parent frame controls stack/row behavior; child frames control nested sections.
+- Do not generate blank surfaces. Every product screen must contain meaningful main content beyond a navbar or header.
+- Avoid chrome-only outputs. Do not generate standalone pages that are only a notifications tray, tiny dropdown, empty drawer, or empty placeholder panel unless explicitly requested.
+- Buttons must be sized consistently from their label length and padding. Avoid random button widths or tiny CTA labels inside oversized containers.
+- Every product/app screen must contain at least one substantial content block such as a form, table, card grid, detail panel, chat panel, dashboard stats section, or settings section.
+
 STRUCTURE REQUIREMENTS
-════════════════════════════════════════
+-------------
 
 Generate the structure that matches the planned frame.
 
@@ -203,11 +316,9 @@ Generate the structure that matches the planned frame.
 - If the frame is a dashboard / CRM / inbox / product screen, generate a full-fidelity application layout instead.
 - Follow the frame description exactly instead of defaulting to a landing page.
 
-════════════════════════════════════════
 NAVBAR DESIGN
-════════════════════════════════════════
-
-Height: 80–90px
+-------------
+Height: 80-90px
 
 Left side:
 Logo text
@@ -227,11 +338,10 @@ Services
 Pricing
 Contact
 
-════════════════════════════════════════
 HERO SECTION
-════════════════════════════════════════
+------------
 
-Starts around y ≈ 140–180
+Starts around y ≈ 140-180
 
 Layout:
 Left column:
@@ -243,61 +353,117 @@ Right column:
 Large hero image
 
 Hero headline size:
-fontSize 72–96
+fontSize 72-96
 fontWeight "bold"
-lineHeight 1.0–1.15
+lineHeight 1.0-1.15
 
 Subtext:
-fontSize 18–20
+fontSize 18-20
 color slightly muted
 
-════════════════════════════════════════
 CARD DESIGN
-════════════════════════════════════════
+-----------
 
 Cards must include:
 
-background rectangle
+frame/container
 title text
 description text
 optional icon or image
 
 Card properties:
-cornerRadius: 16–20
+cornerRadius: 16-20
 backgroundColor slightly lighter than page background
 
 Use grid layouts for cards:
 2 or 3 columns
 
-════════════════════════════════════════
+Cards, forms, lists, navbars, sidebars, and content sections should be represented as `frame` or `component` containers with Auto Layout metadata, not as a loose rectangle plus floating children.
+
+TABLE LAYOUT
+------------
+For tables and data rows:
+
+- Build each row as a `frame` with `layoutMode: "HORIZONTAL"`.
+- Use the SAME column structure in the header row and every body row.
+- Keep column widths consistent across all rows.
+- Use fixed-width columns for short structured fields such as:
+  role, status, plan, amount, priority, action buttons
+- Use fill columns for flexible fields such as:
+  timestamps, names, messages, descriptions, notes
+- Align row items vertically centered with `counterAxisAlignItems: "CENTER"`.
+- Wrap status pills/badges/chips inside their own Auto Layout `frame`.
+- Do NOT use `HUG` sizing for columns that need cross-row alignment consistency.
+- Never use footer/legal text inside rows. Bad example row values:
+  "© 2024 Bot Builder SaaS. All rights reserved."
+  "Terms of Service"
+  "Privacy Policy"
+- Good user-row values:
+  "Olivia Chen", "olivia@acmecorp.com", "Admin", "Active", "2 hours ago"
+- Good bot-row values:
+  "Customer Onboarding Assistant", "Active", "Production", "2 hours ago"
+- Actions/menus column should stay compact and fixed-width.
+- Search/filter/add buttons belong in the toolbar/header area, not inside body rows.
+
+Example row pattern:
+{
+  "type": "frame",
+  "name": "Table Row",
+  "x": 0, "y": 0,
+  "width": 960, "height": 56,
+  "backgroundColor": "#FFFFFF",
+  "layoutMode": "HORIZONTAL",
+  "itemSpacing": 16,
+  "paddingLeft": 16,
+  "paddingRight": 16,
+  "paddingTop": 12,
+  "paddingBottom": 12,
+  "primaryAxisAlignItems": "MIN",
+  "counterAxisAlignItems": "CENTER",
+  "primaryAxisSizingMode": "FIXED",
+  "counterAxisSizingMode": "AUTO",
+  "children": [
+    { "type": "text", "name": "Name Cell", "x": 0, "y": 0, "text": "Ava Johnson", "fontSize": 14, "fontWeight": "medium", "color": "#111111", "layoutSizingHorizontal": "FIXED", "layoutSizingVertical": "HUG", "width": 220 },
+    { "type": "text", "name": "Role Cell", "x": 0, "y": 0, "text": "Admin", "fontSize": 14, "color": "#374151", "layoutSizingHorizontal": "FIXED", "layoutSizingVertical": "HUG", "width": 120 },
+    { "type": "frame", "name": "Status Badge", "x": 0, "y": 0, "layoutMode": "HORIZONTAL", "itemSpacing": 6, "paddingLeft": 10, "paddingRight": 10, "paddingTop": 6, "paddingBottom": 6, "cornerRadius": 999, "backgroundColor": "#EEF2FF", "primaryAxisSizingMode": "AUTO", "counterAxisSizingMode": "AUTO", "layoutSizingHorizontal": "FIXED", "layoutSizingVertical": "FIXED", "width": 92, "height": 30, "children": [
+      { "type": "text", "name": "Status Label", "x": 0, "y": 0, "text": "Active", "fontSize": 12, "fontWeight": "medium", "color": "#3156D3", "layoutSizingHorizontal": "HUG", "layoutSizingVertical": "HUG" }
+    ] },
+    { "type": "text", "name": "Timestamp Cell", "x": 0, "y": 0, "text": "2 minutes ago", "fontSize": 13, "color": "#6B7280", "layoutSizingHorizontal": "FILL", "layoutSizingVertical": "HUG", "layoutGrow": 1 }
+  ]
+}
+
 TYPOGRAPHY HIERARCHY
-════════════════════════════════════════
+--------------------
 
 Hero headline:
-fontSize 72–96
+fontSize 72-96
 fontWeight "bold"
 
 Section heading:
-fontSize 44–56
+fontSize 44-56
 fontWeight "bold"
 
 Subheading:
-fontSize 24–30
+fontSize 24-30
 fontWeight "semibold"
 
 Body text:
-fontSize 16–18
+fontSize 16-18
 color muted
 
 Labels / captions:
-fontSize 12–14
+fontSize 12-14
 fontWeight "bold"
 letterSpacing 2
 
-════════════════════════════════════════
 IMAGE RULES
-════════════════════════════════════════
-
+Use domain-appropriate imagery only when the design actually calls for real content media.
+Do not invent random or irrelevant images.
+Examples:
+  - Farm website -> farm/agriculture imagery
+  - SaaS marketing site -> product/office/team/device imagery
+  - CRM or dashboard app -> use screenshots/illustrations only when the UI clearly includes them
+        
 Only use `image` elements for REAL content imagery such as:
 - hero/product illustrations
 - marketing banners
@@ -325,9 +491,8 @@ Examples:
 "developer coding laptop"
 "team meeting"
 
-════════════════════════════════════════
 FOOTER
-════════════════════════════════════════
+-------
 
 Near the bottom of the frame include:
 
@@ -340,9 +505,8 @@ Divider example:
 rectangle height = 1
 opacity ≈ 0.2
 
-══════════════════════════════════════════
 DESIGN QUALITY REQUIREMENTS:
-══════════════════════════════════════════
+---------------------------
 - Use the provided theme colors throughout: background, surfaces, accent, text
 - Respect the screenshot/reference proportions and overall scale
 - Ignore screenshot capture padding or blank margins around the real UI
@@ -353,17 +517,23 @@ DESIGN QUALITY REQUIREMENTS:
 - Keep shared navigation destinations, ordering, and shell structure consistent across related frames
 - If a modal/menu/drawer/popover is open, preserve the same underlying base screen shell from the parent state
 - Typography hierarchy:
-    Hero heading:  fontSize 72–96, fontWeight "bold", lineHeight 1.0–1.15
-    Section title: fontSize 42–56, fontWeight "bold"
-    Sub-heading:   fontSize 24–32, fontWeight "semibold"
-    Body text:     fontSize 16–20, color slightly muted (e.g. #A0A0A0)
-    Labels/caps:   fontSize 12–14, fontWeight "bold", letterSpacing 2
+    Hero heading:  fontSize 72-96, fontWeight "bold", lineHeight 1.0-1.15
+    Section title: fontSize 42-56, fontWeight "bold"
+    Sub-heading:   fontSize 24-32, fontWeight "semibold"
+    Body text:     fontSize 16-20, color slightly muted (e.g. #A0A0A0)
+    Labels/caps:   fontSize 12-14, fontWeight "bold", letterSpacing 2
 - Layout:
-    Navbar:       y=0, height=80–90px. Logo at x=120 y≈28. Nav links right side. CTA button far right.
+    Navbar:       y=0, height=80-90px. Logo at x=120 y≈28. Nav links right side. CTA button far right.
     Hero:         Starts at y≈150. Big heading left, hero image right.
     Sections:     120px padding top/bottom. Section label (caps) then big heading then content.
-    Cards:        backgroundColor slightly lighter than page bg. cornerRadius 12–20.
+    Cards:        backgroundColor slightly lighter than page bg. cornerRadius 12-20.
     Footer:       Near bottom. Thin divider line (rectangle h=1), copyright left, social links right.
+- Prefer Auto Layout containers for structural UI:
+    Navbar shell:  `component` or `frame` with `layoutMode: "HORIZONTAL"`
+    Card shell:    `frame` with `layoutMode: "VERTICAL"`
+    Form shell:    `frame` with `layoutMode: "VERTICAL"` and nested field rows
+    List shell:    `frame` with `layoutMode: "VERTICAL"` and nested list-item rows
+    Action rows:   `frame` with `layoutMode: "HORIZONTAL"`
 - All coordinates MUST be inside the frame (0 to frame width, 0 to frame height)
 - Include REALISTIC content for the project domain — real names, descriptions, copy
 - Make it look like a professional real website, not a wireframe
@@ -377,7 +547,9 @@ DESIGN QUALITY REQUIREMENTS:
     - Use images only when the element is clearly content media, not a control
     - Never use meaningless placeholder labels like P1, C2, IMG, or random initials for icons
     - Utility controls should use simple vector-like icon groups or compact semantic labels
+
 """
+
 
 
 def build_theme_block(theme: dict) -> str:
@@ -914,7 +1086,7 @@ def _build_memory_block(page: dict) -> str:
     pages = memory.get("pages", []) or []
     nav_model = memory.get("navigation_model") or {}
     page_lines = []
-    for item in pages[:12]:
+    for item in pages[:5]:
         if not isinstance(item, dict):
             continue
         line = " | ".join([part for part in [
@@ -955,6 +1127,26 @@ def _json_for_prompt(value: object, max_chars: int = 18000) -> str:
     return raw if len(raw) <= max_chars else (raw[:max_chars] + "\n...TRUNCATED...")
 
 
+def _trim_prompt_value(value: str, limit: int = CODING_LAYOUT_TEXT_LIMIT) -> str:
+    value = str(value or "").strip()
+    return value if len(value) <= limit else value[:limit].rstrip() + " ..."
+
+
+def _compact_layout_context(layout_context: dict | None) -> dict:
+    if not isinstance(layout_context, dict):
+        return {}
+    return {
+        "layout_type": layout_context.get("layout_type", ""),
+        "screen_type": layout_context.get("screen_type", ""),
+        "visual_style": _trim_prompt_value(layout_context.get("visual_style", "")),
+        "color_palette": _trim_prompt_value(layout_context.get("color_palette", "")),
+        "detected_sections": list((layout_context.get("detected_sections") or [])[:8]),
+        "detected_components": list((layout_context.get("detected_components") or [])[:10]),
+        "outer_padding_present": bool(layout_context.get("outer_padding_present")),
+        "viewport_fill_guidance": _trim_prompt_value(layout_context.get("viewport_fill_guidance", ""), 180),
+    }
+
+
 def _build_attachment_context_block(page: dict) -> str:
     attachment = page.get("attachment_context") or {}
     if not attachment:
@@ -980,13 +1172,13 @@ def _build_attachment_context_block(page: dict) -> str:
 
     if attachment.get("primary_tree"):
         lines.append("\nPRIMARY PAGE TREE:")
-        lines.append(_json_for_prompt(attachment.get("primary_tree"), 22000))
+        lines.append(_json_for_prompt(attachment.get("primary_tree"), CODING_ATTACHMENT_PRIMARY_LIMIT))
     if attachment.get("context_trees"):
         lines.append("\nCONTEXT PAGE TREES:")
-        lines.append(_json_for_prompt(attachment.get("context_trees"), 16000))
+        lines.append(_json_for_prompt(attachment.get("context_trees"), CODING_ATTACHMENT_CONTEXT_LIMIT))
     if attachment.get("component_trees"):
         lines.append("\nREUSABLE COMPONENT TREES:")
-        lines.append(_json_for_prompt(attachment.get("component_trees"), 16000))
+        lines.append(_json_for_prompt(attachment.get("component_trees"), CODING_ATTACHMENT_COMPONENT_LIMIT))
 
     return "\n".join(lines) + "\n"
 
@@ -1022,6 +1214,12 @@ def _estimate_text_box(text_value: str, font_size: int) -> tuple[int, int]:
     width = max(24, int(len(clean) * max(7, size * 0.55)))
     height = max(18, int(size * 1.4))
     return width, height
+
+
+def _estimate_button_width(text_value: str, font_size: int) -> int:
+    clean = str(text_value or "").strip()
+    size = max(12, int(font_size or 16))
+    return max(88, min(320, int(len(clean) * max(7, size * 0.58)) + 40))
 
 
 def _collect_text_values(node: dict, limit: int = 8) -> list[str]:
@@ -1158,11 +1356,16 @@ def _component_variant_signature(node: dict, role: str) -> str:
         label = _primary_label(node) or (labels[0] if labels else "item")
         return _slugify_component(label)
 
+    if role == "global-nav":
+        return "shared"
+
+    if role == "secondary-nav":
+        return "shared"
+
+    if role == "sidebar":
+        return "shared"
+
     variant_parts = []
-    if role in {"secondary-nav", "sidebar"} and labels:
-        variant_parts.append("-".join(labels[:5]))
-    elif role == "global-nav":
-        variant_parts.append("-".join(labels[:4]) if labels else "")
 
     if not variant_parts or not variant_parts[0]:
         variant_parts = [f"{width}x{height}" if width and height else "default"]
@@ -1199,8 +1402,8 @@ def _apply_component_identity(node: dict, role: str) -> dict:
     }.get(role)
     if component_meta:
         comp_name, comp_key = component_meta
-        updated["componentName"] = f"{comp_name}/{_pretty_component_words(variant)}"
-        updated["componentKey"] = f"{comp_key}/{variant}"
+        updated["componentName"] = comp_name
+        updated["componentKey"] = comp_key if role in {"global-nav", "secondary-nav", "sidebar"} else f"{comp_key}/{variant}"
         return updated
 
     return updated
@@ -1289,12 +1492,553 @@ def stabilize_generated_children(children: list) -> list:
             text_value = str(updated.get("text", "") or "")
             width = int(updated.get("width", 0) or 0)
             font_size = int(updated.get("fontSize", 16) or 16)
-            approx_width = int(len(text_value.strip()) * max(7, font_size * 0.55)) + 36
-            if width and text_value.strip() and width < approx_width:
-                updated["width"] = min(max(width, approx_width), 360)
+            approx_width = _estimate_button_width(text_value, font_size)
+            if text_value.strip():
+                updated["width"] = min(max(width or 0, approx_width), 360)
+            updated["height"] = max(40, int(updated.get("height", 44) or 44))
+            updated["textAlign"] = "CENTER"
 
         stabilized.append(updated)
     return stabilized
+
+
+def _node_name_blob(node: dict) -> str:
+    return " ".join([
+        str(node.get("name", "") or ""),
+        str(node.get("text", "") or ""),
+        str(node.get("componentName", "") or ""),
+    ]).lower()
+
+
+def _find_primary_text(node: dict) -> dict | None:
+    if not isinstance(node, dict):
+        return None
+    if str(node.get("type", "")).lower() == "text" and str(node.get("text", "") or "").strip():
+        return node
+    for child in node.get("children", []) or []:
+        found = _find_primary_text(child)
+        if found:
+            return found
+    return None
+
+
+def _is_status_badge(node: dict, parent_blob: str = "") -> bool:
+    if not isinstance(node, dict):
+        return False
+    blob = _node_name_blob(node)
+    text = _find_primary_text(node)
+    text_value = str((text or {}).get("text", "") or "").strip().lower()
+    status_words = {"active", "inactive", "pending", "draft", "archived", "paused", "completed"}
+    if "badge" in blob or "pill" in blob or "chip" in blob:
+        return True
+    if "status" in parent_blob and text_value in status_words:
+        return True
+    return False
+
+
+def _is_status_cell(node: dict) -> bool:
+    blob = _node_name_blob(node)
+    return "status cell" in blob or blob.strip() == "status"
+
+
+def _is_search_control(node: dict) -> bool:
+    blob = _node_name_blob(node)
+    return any(token in blob for token in ["search box", "search input", "search field", "searchbar", "search bar"])
+
+
+def _is_menu_item(node: dict, parent_blob: str = "") -> bool:
+    blob = _node_name_blob(node)
+    return "menu item" in blob or ("dropdown" in parent_blob and str(node.get("type", "")).lower() in {"frame", "component"})
+
+
+def _normalize_text_box(node: dict, pad_x: int = 0, pad_y: int = 0) -> dict:
+    updated = dict(node)
+    text_value = str(updated.get("text", "") or "").strip()
+    font_size = int(updated.get("fontSize", 14) or 14)
+    est_w, est_h = _estimate_text_box(text_value, font_size)
+    updated["width"] = max(int(updated.get("width", 0) or 0), est_w + pad_x)
+    updated["height"] = max(int(updated.get("height", 0) or 0), est_h + pad_y)
+    updated["textAlignHorizontal"] = updated.get("textAlignHorizontal") or "CENTER"
+    updated["textAlignVertical"] = updated.get("textAlignVertical") or "CENTER"
+    updated["layoutSizingHorizontal"] = "FIXED"
+    updated["layoutSizingVertical"] = "FIXED"
+    return updated
+
+
+def _normalize_left_text_box(node: dict, pad_x: int = 0, pad_y: int = 0, min_height: int = 0) -> dict:
+    updated = _normalize_text_box(node, pad_x, pad_y)
+    updated["textAlignHorizontal"] = "LEFT"
+    updated["textAlignVertical"] = updated.get("textAlignVertical") or "CENTER"
+    if min_height > 0:
+        updated["height"] = max(int(updated.get("height", 0) or 0), min_height)
+    return updated
+
+
+def _normalize_status_badge(node: dict) -> dict:
+    updated = dict(node)
+    text_node = _find_primary_text(updated)
+    label = str((text_node or {}).get("text", "") or "Status").strip()
+    font_size = int((text_node or {}).get("fontSize", 12) or 12)
+    est_text_w, est_text_h = _estimate_text_box(label, font_size)
+    badge_height = max(24, min(28, est_text_h + 10))
+    badge_width = max(64, min(120, est_text_w + 28))
+
+    children = updated.get("children", []) or []
+    normalized_children = []
+    for child in children:
+        if not isinstance(child, dict):
+            continue
+        child_updated = dict(child)
+        if child is text_node or _find_primary_text(child) is text_node:
+            if str(child_updated.get("type", "")).lower() == "text":
+                child_updated = _normalize_text_box(child_updated, 0, 0)
+            else:
+                child_updated["width"] = max(int(child_updated.get("width", 0) or 0), est_text_w)
+                child_updated["height"] = max(int(child_updated.get("height", 0) or 0), est_text_h)
+                child_updated["layoutSizingHorizontal"] = "FIXED"
+                child_updated["layoutSizingVertical"] = "FIXED"
+                if isinstance(child_updated.get("children"), list):
+                    child_updated["children"] = [
+                        _normalize_text_box(dict(grandchild), 0, 0) if isinstance(grandchild, dict) and str(grandchild.get("type", "")).lower() == "text" else grandchild
+                        for grandchild in child_updated["children"]
+                    ]
+            normalized_children.append(child_updated)
+        else:
+            normalized_children.append(child_updated)
+
+    updated["children"] = normalized_children
+    updated["layoutMode"] = "HORIZONTAL"
+    updated["primaryAxisAlignItems"] = "CENTER"
+    updated["counterAxisAlignItems"] = "CENTER"
+    updated["layoutSizingHorizontal"] = "FIXED"
+    updated["layoutSizingVertical"] = "FIXED"
+    updated["width"] = max(int(updated.get("width", 0) or 0), badge_width)
+    updated["height"] = max(int(updated.get("height", 0) or 0), badge_height)
+    updated["paddingLeft"] = 0
+    updated["paddingRight"] = 0
+    updated["paddingTop"] = 0
+    updated["paddingBottom"] = 0
+    updated["itemSpacing"] = 0
+    updated["cornerRadius"] = max(int(updated.get("cornerRadius", 999) or 999), 999)
+    return updated
+
+
+def _normalize_status_cell(node: dict) -> dict:
+    updated = dict(node)
+    updated["layoutMode"] = "HORIZONTAL"
+    updated["primaryAxisAlignItems"] = "MIN"
+    updated["counterAxisAlignItems"] = "CENTER"
+    updated["layoutSizingHorizontal"] = "FIXED"
+    updated["layoutSizingVertical"] = "FIXED" if int(updated.get("height", 0) or 0) > 0 else updated.get("layoutSizingVertical", "HUG")
+    updated["width"] = max(int(updated.get("width", 0) or 0), 120)
+    children = []
+    for child in updated.get("children", []) or []:
+        if not isinstance(child, dict):
+            continue
+        child_updated = dict(child)
+        if _is_status_badge(child_updated, _node_name_blob(updated)):
+            child_updated = _normalize_status_badge(child_updated)
+        children.append(child_updated)
+    updated["children"] = children
+    return updated
+
+
+def _normalize_search_control(node: dict) -> dict:
+    updated = dict(node)
+    updated["layoutMode"] = "HORIZONTAL"
+    updated["primaryAxisAlignItems"] = updated.get("primaryAxisAlignItems") or "MIN"
+    updated["counterAxisAlignItems"] = "CENTER"
+    updated["layoutSizingHorizontal"] = "FIXED"
+    updated["layoutSizingVertical"] = "FIXED"
+    updated["width"] = max(220, min(int(updated.get("width", 0) or 260), 320))
+    updated["height"] = max(44, min(int(updated.get("height", 0) or 44), 48))
+    updated["paddingLeft"] = max(14, int(updated.get("paddingLeft", 0) or 0))
+    updated["paddingRight"] = max(14, int(updated.get("paddingRight", 0) or 0))
+    updated["paddingTop"] = 0
+    updated["paddingBottom"] = 0
+    updated["itemSpacing"] = max(8, int(updated.get("itemSpacing", 0) or 8))
+    children = []
+    for child in updated.get("children", []) or []:
+        if not isinstance(child, dict):
+            continue
+        child_updated = dict(child)
+        child_blob = _node_name_blob(child_updated)
+        if "icon" in child_blob or "search" in child_blob and str(child_updated.get("type", "")).lower() != "text":
+            child_updated["width"] = max(16, min(int(child_updated.get("width", 0) or 16), 20))
+            child_updated["height"] = max(16, min(int(child_updated.get("height", 0) or 16), 20))
+            child_updated["layoutSizingHorizontal"] = "FIXED"
+            child_updated["layoutSizingVertical"] = "FIXED"
+        primary_text = _find_primary_text(child_updated)
+        if primary_text:
+            if str(child_updated.get("type", "")).lower() == "text":
+                child_updated = _normalize_text_box(child_updated, 8, 0)
+                child_updated["textAlignHorizontal"] = "LEFT"
+            elif isinstance(child_updated.get("children"), list):
+                new_grandchildren = []
+                for grandchild in child_updated["children"]:
+                    if isinstance(grandchild, dict) and str(grandchild.get("type", "")).lower() == "text":
+                        gc = _normalize_text_box(dict(grandchild), 8, 0)
+                        gc["textAlignHorizontal"] = "LEFT"
+                        new_grandchildren.append(gc)
+                    else:
+                        new_grandchildren.append(grandchild)
+                child_updated["children"] = new_grandchildren
+        children.append(child_updated)
+    updated["children"] = children
+    return updated
+
+
+def _normalize_menu_item(node: dict) -> dict:
+    updated = dict(node)
+    updated["layoutMode"] = "HORIZONTAL"
+    updated["primaryAxisAlignItems"] = "MIN"
+    updated["counterAxisAlignItems"] = "CENTER"
+    updated["layoutSizingHorizontal"] = updated.get("layoutSizingHorizontal") or "FILL"
+    updated["layoutSizingVertical"] = "FIXED"
+    updated["height"] = max(40, min(int(updated.get("height", 0) or 40), 44))
+    updated["paddingTop"] = 0
+    updated["paddingBottom"] = 0
+    updated["paddingLeft"] = max(12, int(updated.get("paddingLeft", 0) or 0))
+    updated["paddingRight"] = max(12, int(updated.get("paddingRight", 0) or 0))
+    updated["itemSpacing"] = max(8, int(updated.get("itemSpacing", 0) or 8))
+    children = []
+    for child in updated.get("children", []) or []:
+        if not isinstance(child, dict):
+            continue
+        child_updated = dict(child)
+        if str(child_updated.get("type", "")).lower() == "text":
+            child_updated = _normalize_left_text_box(child_updated, 8, 0, min_height=16)
+        children.append(child_updated)
+    updated["children"] = children
+    return updated
+
+
+def _is_option_card(node: dict) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if str(node.get("type", "")).lower() not in {"frame", "component"}:
+        return False
+    blob = _node_name_blob(node)
+    if not any(token in blob for token in ["role", "option", "selection", "radio card", "plan card"]):
+        return False
+    return len(node.get("children", []) or []) >= 2
+
+
+def _normalize_option_card(node: dict) -> dict:
+    updated = dict(node)
+    updated["layoutMode"] = updated.get("layoutMode") or "HORIZONTAL"
+    updated["counterAxisAlignItems"] = "CENTER"
+    updated["itemSpacing"] = max(12, int(updated.get("itemSpacing", 0) or 12))
+    updated["paddingLeft"] = max(12, int(updated.get("paddingLeft", 0) or 0))
+    updated["paddingRight"] = max(12, int(updated.get("paddingRight", 0) or 0))
+    updated["paddingTop"] = max(12, int(updated.get("paddingTop", 0) or 0))
+    updated["paddingBottom"] = max(12, int(updated.get("paddingBottom", 0) or 0))
+    updated["height"] = max(64, int(updated.get("height", 0) or 64))
+
+    children = []
+    for child in updated.get("children", []) or []:
+        if not isinstance(child, dict):
+            continue
+        child_updated = dict(child)
+        child_type = str(child_updated.get("type", "")).lower()
+        if child_type == "text":
+            child_updated = _normalize_left_text_box(child_updated, 4, 2)
+        elif child_type in {"frame", "component"} and _find_primary_text(child_updated):
+            nested_children = []
+            for grandchild in child_updated.get("children", []) or []:
+                if isinstance(grandchild, dict) and str(grandchild.get("type", "")).lower() == "text":
+                    nested_children.append(_normalize_left_text_box(dict(grandchild), 4, 2))
+                else:
+                    nested_children.append(grandchild)
+            child_updated["children"] = nested_children
+        children.append(child_updated)
+    updated["children"] = children
+    return updated
+
+
+def _is_action_menu_surface(node: dict, parent_blob: str = "") -> bool:
+    if not isinstance(node, dict):
+        return False
+    if str(node.get("type", "")).lower() not in {"frame", "component"}:
+        return False
+    blob = _node_name_blob(node)
+    menu_like = any(token in blob for token in ["options menu", "action menu", "dropdown menu", "module dropdown", "popover menu"])
+    parent_menu_like = any(token in parent_blob for token in ["dropdown", "menu", "options"])
+    return menu_like or (parent_menu_like and len(node.get("children", []) or []) >= 3)
+
+
+def _normalize_action_menu_surface(node: dict) -> dict:
+    updated = dict(node)
+    updated["layoutMode"] = "VERTICAL"
+    updated["primaryAxisAlignItems"] = "MIN"
+    updated["counterAxisAlignItems"] = "MIN"
+    updated["itemSpacing"] = max(4, int(updated.get("itemSpacing", 0) or 4))
+    updated["paddingLeft"] = max(10, int(updated.get("paddingLeft", 0) or 0))
+    updated["paddingRight"] = max(10, int(updated.get("paddingRight", 0) or 0))
+    updated["paddingTop"] = max(10, int(updated.get("paddingTop", 0) or 0))
+    updated["paddingBottom"] = max(10, int(updated.get("paddingBottom", 0) or 0))
+    updated["width"] = max(188, min(int(updated.get("width", 0) or 220), 280))
+    updated["backgroundColor"] = updated.get("backgroundColor") or "#FFFFFF"
+    updated["cornerRadius"] = max(10, int(updated.get("cornerRadius", 12) or 12))
+    updated["layoutSizingHorizontal"] = "FIXED"
+
+    children = []
+    for child in updated.get("children", []) or []:
+        if not isinstance(child, dict):
+            continue
+        child_updated = dict(child)
+        if _is_menu_item(child_updated, _node_name_blob(updated)):
+            child_updated = _normalize_menu_item(child_updated)
+        children.append(child_updated)
+    updated["children"] = children
+    return updated
+
+
+TABLE_HEADER_TOKENS = {"name", "email", "role", "status", "last login", "last updated", "actions", "bot name", "phase"}
+
+
+def _is_obvious_table_row(node: dict) -> bool:
+    return (
+        isinstance(node, dict)
+        and str(node.get("type", "")).lower() in {"frame", "component"}
+        and str(node.get("layoutMode", "")).upper() == "HORIZONTAL"
+        and len(node.get("children", []) or []) >= 3
+    )
+
+
+def _table_rows(node: dict) -> list[dict]:
+    return [child for child in (node.get("children") or []) if _is_obvious_table_row(child)]
+
+
+def _table_header_labels(row: dict) -> list[str]:
+    labels = []
+    for child in row.get("children", []) or []:
+        if not isinstance(child, dict):
+            continue
+        text = _find_primary_text(child) if str(child.get("type", "")).lower() != "text" else child
+        value = str((text or {}).get("text", "") or "").strip().lower()
+        if value:
+            labels.append(value)
+    return labels
+
+
+def _is_strict_table_container(node: dict) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if str(node.get("type", "")).lower() not in {"frame", "component"}:
+        return False
+    blob = _node_name_blob(node)
+    if not any(token in blob for token in ["table", "users", "results", "dashboard", "list"]):
+        return False
+    rows = _table_rows(node)
+    if len(rows) < 2:
+        return False
+    header_labels = _table_header_labels(rows[0])
+    header_hits = sum(1 for label in header_labels if label in TABLE_HEADER_TOKENS)
+    return header_hits >= 2
+
+
+def _table_column_width(label: str) -> int | None:
+    label = (label or "").lower()
+    if "email" in label:
+        return 240
+    if "bot name" in label or label == "name":
+        return 220
+    if "role" in label:
+        return 140
+    if "status" in label:
+        return 120
+    if "last login" in label or "last updated" in label or "phase" in label:
+        return 160
+    if "action" in label:
+        return 140
+    return None
+
+
+def _normalize_strict_table(node: dict) -> dict:
+    updated = dict(node)
+    rows = _table_rows(updated)
+    if len(rows) < 2:
+        return updated
+
+    header_labels = _table_header_labels(rows[0])
+    column_widths = {idx: _table_column_width(label) for idx, label in enumerate(header_labels)}
+
+    children = []
+    for child in updated.get("children", []) or []:
+        if not isinstance(child, dict) or not _is_obvious_table_row(child):
+            children.append(child)
+            continue
+
+        row_updated = dict(child)
+        row_updated["counterAxisAlignItems"] = "CENTER"
+        row_updated["itemSpacing"] = max(12, int(row_updated.get("itemSpacing", 0) or 12))
+        cells = []
+        for idx, cell in enumerate(row_updated.get("children", []) or []):
+            if not isinstance(cell, dict):
+                cells.append(cell)
+                continue
+            cell_updated = dict(cell)
+            target = column_widths.get(idx)
+            if target:
+                cell_updated["width"] = max(int(cell_updated.get("width", 0) or 0), target)
+                cell_updated["minWidth"] = max(int(cell_updated.get("minWidth", 0) or 0), target)
+                cell_updated["layoutSizingHorizontal"] = "FIXED"
+            elif idx == 0:
+                cell_updated["layoutSizingHorizontal"] = cell_updated.get("layoutSizingHorizontal") or "FILL"
+                cell_updated["layoutGrow"] = max(int(cell_updated.get("layoutGrow", 0) or 0), 1)
+            cells.append(cell_updated)
+        row_updated["children"] = cells
+        children.append(row_updated)
+
+    updated["children"] = children
+    return updated
+
+
+def normalize_compact_controls(children: list, parent_blob: str = "") -> list:
+    normalized = []
+    for el in children or []:
+        if not isinstance(el, dict):
+            continue
+        updated = dict(el)
+        blob = _node_name_blob(updated)
+        if isinstance(updated.get("children"), list):
+            updated["children"] = normalize_compact_controls(updated["children"], blob)
+
+        node_type = str(updated.get("type", "")).lower()
+        if _is_status_cell(updated):
+            updated = _normalize_status_cell(updated)
+        elif node_type in {"frame", "component"} and _is_status_badge(updated, parent_blob):
+            updated = _normalize_status_badge(updated)
+        elif node_type in {"frame", "component"} and _is_search_control(updated):
+            updated = _normalize_search_control(updated)
+        elif node_type in {"frame", "component"} and _is_option_card(updated):
+            updated = _normalize_option_card(updated)
+        elif node_type in {"frame", "component"} and _is_action_menu_surface(updated, parent_blob):
+            updated = _normalize_action_menu_surface(updated)
+        elif node_type in {"frame", "component"} and _is_menu_item(updated, parent_blob):
+            updated = _normalize_menu_item(updated)
+        elif node_type in {"frame", "component"} and _is_strict_table_container(updated):
+            updated = _normalize_strict_table(updated)
+
+        normalized.append(updated)
+    return normalized
+
+
+def _looks_like_blank_shell(el: dict) -> bool:
+    if not isinstance(el, dict):
+        return False
+    node_type = str(el.get("type", "")).lower()
+    if node_type not in {"frame", "rectangle"}:
+        return False
+    width = int(el.get("width", 0) or 0)
+    height = int(el.get("height", 0) or 0)
+    if width < 900 or height < 420:
+        return False
+    if el.get("children"):
+        return False
+    bg = _normalized_color(el.get("backgroundColor"))
+    return bg in {"#ffffff", "#f8fafc", "#f5f5f5", "#111111", "#121212", "#000000"}
+
+
+def _sanitize_button_node(el: dict) -> dict:
+    updated = dict(el)
+    label = str(updated.get("text", "") or updated.get("name", "") or "Button").strip() or "Button"
+    font_size = int(updated.get("fontSize", 16) or 16)
+    est_width = _estimate_button_width(label, font_size)
+    current_width = int(updated.get("width", 0) or 0)
+    updated["text"] = label
+    updated["width"] = min(max(current_width or 0, est_width), 320)
+    updated["height"] = max(40, int(updated.get("height", 44) or 44))
+    updated["minWidth"] = max(int(updated.get("minWidth", 0) or 0), est_width)
+    updated["minHeight"] = max(int(updated.get("minHeight", 0) or 0), updated["height"])
+    updated["textAlign"] = "CENTER"
+    if updated.get("layoutMode") in {"HORIZONTAL", "VERTICAL"}:
+        updated["primaryAxisAlignItems"] = updated.get("primaryAxisAlignItems") or "CENTER"
+        updated["counterAxisAlignItems"] = updated.get("counterAxisAlignItems") or "CENTER"
+    return updated
+
+
+def _sanitize_text_node(el: dict) -> dict:
+    updated = dict(el)
+    text = str(updated.get("text", "") or "").strip()
+    if not text:
+        return updated
+    updated["text"] = text
+    has_width = int(updated.get("width", 0) or 0) > 0
+    has_height = int(updated.get("height", 0) or 0) > 0
+    if updated.get("layoutSizingHorizontal") is None:
+        updated["layoutSizingHorizontal"] = "FIXED" if has_width else "HUG"
+    if updated.get("layoutSizingVertical") is None:
+        updated["layoutSizingVertical"] = "FIXED" if has_height else "HUG"
+    return updated
+
+
+def _sanitize_container_node(el: dict) -> dict:
+    updated = dict(el)
+    if isinstance(updated.get("children"), list):
+        updated["children"] = sanitize_generated_children(updated["children"])
+    if updated.get("layoutMode") in {"HORIZONTAL", "VERTICAL"}:
+        updated["itemSpacing"] = max(0, int(updated.get("itemSpacing", 12) or 12))
+        updated["paddingLeft"] = int(updated.get("paddingLeft", 0) or 0)
+        updated["paddingRight"] = int(updated.get("paddingRight", 0) or 0)
+        updated["paddingTop"] = int(updated.get("paddingTop", 0) or 0)
+        updated["paddingBottom"] = int(updated.get("paddingBottom", 0) or 0)
+    return updated
+
+
+def _is_footer_legal_text(value: str) -> bool:
+    lower = str(value or "").strip().lower()
+    return bool(lower) and any(token in lower for token in FOOTER_LEAK_TOKENS)
+
+
+def _strip_repeated_footer_text(children: list, in_footer_region: bool = False, seen_footer_texts: set[str] | None = None) -> list:
+    if seen_footer_texts is None:
+        seen_footer_texts = set()
+
+    cleaned = []
+    for el in children or []:
+        if not isinstance(el, dict):
+            continue
+
+        updated = dict(el)
+        node_text = str(updated.get("text", "") or "").strip()
+        node_name_blob = " ".join([
+            str(updated.get("name", "") or ""),
+            node_text,
+        ]).lower()
+        node_y = int(updated.get("y", 0) or 0)
+        node_h = int(updated.get("height", 0) or 0)
+        node_bottom = node_y + max(0, node_h)
+        is_footerish_node = (
+            in_footer_region
+            or "footer" in node_name_blob
+            or "legal" in node_name_blob
+            or node_bottom >= 940
+        )
+
+        if isinstance(updated.get("children"), list):
+            updated["children"] = _strip_repeated_footer_text(
+                updated["children"],
+                in_footer_region=is_footerish_node,
+                seen_footer_texts=seen_footer_texts,
+            )
+
+        if str(updated.get("type", "")).lower() == "text" and _is_footer_legal_text(node_text):
+            normalized = node_text.lower()
+            if is_footerish_node and normalized not in seen_footer_texts:
+                seen_footer_texts.add(normalized)
+                cleaned.append(updated)
+                continue
+            if not is_footerish_node:
+                continue
+            continue
+
+        cleaned.append(updated)
+
+    return cleaned
+
+
 
 
 def sanitize_generated_children(children: list) -> list:
@@ -1303,8 +2047,11 @@ def sanitize_generated_children(children: list) -> list:
         if not isinstance(el, dict):
             continue
 
-        if el.get("type") == "group" and isinstance(el.get("children"), list):
+        if isinstance(el.get("children"), list):
             el = {**el, "children": sanitize_generated_children(el["children"])}
+
+        if _looks_like_blank_shell(el):
+            continue
 
         if el.get("type") == "image":
             kind = _infer_asset_kind(el)
@@ -1318,8 +2065,16 @@ def sanitize_generated_children(children: list) -> list:
                 sanitized.append(_make_logo_group(el))
                 continue
 
+        node_type = str(el.get("type", "")).lower()
+        if node_type == "button":
+            el = _sanitize_button_node(el)
+        elif node_type == "text":
+            el = _sanitize_text_node(el)
+        elif node_type in {"frame", "component"}:
+            el = _sanitize_container_node(el)
+
         sanitized.append(el)
-    return sanitized
+    return _strip_repeated_footer_text(sanitized)
 
 
 def clean_json_response(raw: str) -> str:
@@ -1396,6 +2151,303 @@ def parse_coding_response(raw: str, page_name: str) -> list:
         raise ValueError(f"Invalid JSON for '{page_name}': {e}\n\nRaw:\n{raw[:800]}")
 
 
+def _is_meaningful_element(el: dict) -> bool:
+    if not isinstance(el, dict):
+        return False
+    node_type = str(el.get("type", "")).lower()
+    if node_type in {"text", "button", "image", "frame", "component", "group"}:
+        return True
+    if node_type == "rectangle":
+        return int(el.get("width", 0) or 0) > 8 and int(el.get("height", 0) or 0) > 8
+    return False
+
+
+def _has_navbar_only_layout(children: list, page_width: int) -> bool:
+    nodes = list(_iter_nodes(children))
+    nav_like = 0
+    meaningful_non_nav = 0
+    large_content_blocks = _count_large_content_blocks(nodes)
+    meaningful_nested_content = 0
+    for el in nodes:
+        if not isinstance(el, dict):
+            continue
+        width = int(el.get("width", 0) or 0)
+        height = int(el.get("height", 0) or 0)
+        name_blob = " ".join([str(el.get("name", "") or ""), str(el.get("text", "") or "")]).lower()
+        if width >= int(page_width * 0.7) and 40 <= height <= 120 and any(token in name_blob for token in ["nav", "header", "top bar", "topbar"]):
+            nav_like += 1
+            continue
+        if _looks_like_meaningful_content_node(el, page_width):
+            meaningful_nested_content += 1
+        if el in (children or []) and _is_meaningful_element(el):
+            meaningful_non_nav += 1
+    text_values = _collect_text_values_from_elements(children)
+    return (
+        nav_like >= 1
+        and meaningful_non_nav <= 2
+        and large_content_blocks == 0
+        and meaningful_nested_content <= 2
+        and len(text_values) <= 6
+    )
+
+
+def _count_large_content_blocks(children: list) -> int:
+    count = 0
+    for el in children or []:
+        if not isinstance(el, dict):
+            continue
+        node_type = str(el.get("type", "")).lower()
+        width = int(el.get("width", 0) or 0)
+        height = int(el.get("height", 0) or 0)
+        name_blob = " ".join([str(el.get("name", "") or ""), str(el.get("text", "") or "")]).lower()
+        if node_type in {"frame", "component", "rectangle"} and width >= 220 and height >= 140:
+            if any(token in name_blob for token in [
+                "form", "card", "panel", "table", "list", "stats", "chart", "content",
+                "management", "dashboard", "settings", "user", "login", "forgot password",
+                "invite", "modal", "dialog", "detail"
+            ]):
+                count += 1
+    return count
+
+
+FOOTER_LEAK_TOKENS = [
+    "all rights reserved",
+    "terms of service",
+    "privacy policy",
+    "documentation",
+]
+
+
+def _collect_text_values_from_elements(elements: list) -> list[str]:
+    values = []
+    for el in elements or []:
+        if not isinstance(el, dict):
+            continue
+        text = str(el.get("text", "") or "").strip()
+        if text:
+            values.append(text)
+        if isinstance(el.get("children"), list):
+            values.extend(_collect_text_values_from_elements(el["children"]))
+    return values
+
+
+def _looks_like_table_screen(children: list, is_product_ui: bool) -> bool:
+    if not is_product_ui:
+        return False
+    joined = " ".join(_collect_text_values_from_elements(children)).lower()
+    return any(token in joined for token in [
+        "email", "role", "status", "last login", "last updated", "actions",
+        "bot name", "phase",
+    ])
+
+
+def _footer_leak_score(text_values: list[str]) -> int:
+    score = 0
+    for value in text_values:
+        lower = value.lower()
+        if any(token in lower for token in FOOTER_LEAK_TOKENS):
+            score += 1
+    return score
+
+
+def _has_entity_like_table_content(text_values: list[str]) -> bool:
+    email_like = sum(1 for value in text_values if "@" in value and "." in value)
+    status_like = sum(1 for value in text_values if value.strip().lower() in {"active", "inactive", "pending", "draft", "archived", "production", "warning", "failed", "passed"})
+    person_or_bot_like = sum(
+        1
+        for value in text_values
+        if len(value.split()) >= 2
+        and len(value) <= 48
+        and not any(token in value.lower() for token in FOOTER_LEAK_TOKENS)
+    )
+    return email_like >= 2 or status_like >= 2 or person_or_bot_like >= 4
+
+
+def _iter_nodes(elements: list):
+    for el in elements or []:
+        if not isinstance(el, dict):
+            continue
+        yield el
+        if isinstance(el.get("children"), list):
+            yield from _iter_nodes(el["children"])
+
+
+def _node_bottom(el: dict) -> int:
+    y = int(el.get("y", 0) or 0)
+    h = int(el.get("height", 0) or 0)
+    return y + max(0, h)
+
+
+def _is_large_surface_node(el: dict, page_width: int) -> bool:
+    if not isinstance(el, dict):
+        return False
+    node_type = str(el.get("type", "")).lower()
+    if node_type not in {"frame", "component", "rectangle"}:
+        return False
+    width = int(el.get("width", 0) or 0)
+    height = int(el.get("height", 0) or 0)
+    bg = _normalized_color(el.get("backgroundColor"))
+    if bg in {"", "transparent"}:
+        return False
+    return width >= int(page_width * 0.7) and height >= 320
+
+
+def _looks_like_meaningful_content_node(el: dict, page_width: int) -> bool:
+    if not isinstance(el, dict):
+        return False
+    node_type = str(el.get("type", "")).lower()
+    width = int(el.get("width", 0) or 0)
+    height = int(el.get("height", 0) or 0)
+    blob = " ".join([str(el.get("name", "") or ""), str(el.get("text", "") or "")]).lower()
+    if node_type == "text" and len(str(el.get("text", "") or "").strip()) >= 6:
+        return True
+    if node_type == "button":
+        return True
+    if node_type in {"frame", "component", "rectangle"} and width >= 180 and height >= 80:
+        if any(token in blob for token in [
+            "table", "list", "form", "card", "modal", "dialog", "panel", "content",
+            "dashboard", "management", "chat", "simulator", "qa", "results", "users",
+        ]):
+            return True
+    return False
+
+
+def _has_oversized_surface_tail(children: list, page_width: int) -> bool:
+    nodes = list(_iter_nodes(children))
+    meaningful = [el for el in nodes if _looks_like_meaningful_content_node(el, page_width)]
+    if not meaningful:
+        return False
+
+    content_bottom = max(_node_bottom(el) for el in meaningful)
+    tall_surfaces = [el for el in nodes if _is_large_surface_node(el, page_width)]
+    if not tall_surfaces:
+        return False
+
+    dominant_surface_bottom = max(_node_bottom(el) for el in tall_surfaces)
+    dominant_surface_height = max(int(el.get("height", 0) or 0) for el in tall_surfaces)
+
+    # If a very large surface extends far below the meaningful content, it likely created
+    # the black/white tail behavior seen in failed generations.
+    return dominant_surface_height >= 420 and (dominant_surface_bottom - content_bottom) >= 260
+
+
+def _infer_screen_class(page_name: str, page_desc: str) -> str:
+    hay = " ".join([str(page_name or ""), str(page_desc or "")]).lower()
+    if any(token in hay for token in ["options menu", "action menu", "dropdown open", "module dropdown", "popover"]):
+        return "menu_state"
+    if any(token in hay for token in ["add user", "invite user"]):
+        return "add_user"
+    if "login" in hay or "sign in" in hay:
+        return "login"
+    if any(token in hay for token in ["users page", "user management", "admin - users page"]):
+        return "users_table"
+    if any(token in hay for token in ["product dashboard", "dashboard"]):
+        return "dashboard"
+    return ""
+
+
+def _contains_any_text(text_values: list[str], needles: list[str]) -> bool:
+    joined = " ".join(text_values).lower()
+    return any(needle in joined for needle in needles)
+
+
+def _has_button_like_action(nodes: list[dict], labels: list[str]) -> bool:
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("type", "")).lower()
+        blob = " ".join([
+            str(node.get("name", "") or ""),
+            str(node.get("text", "") or ""),
+        ]).lower()
+        if node_type == "button" and any(label in blob for label in labels):
+            return True
+        if node_type in {"frame", "component"} and any(label in blob for label in labels):
+            if int(node.get("width", 0) or 0) >= 80 and int(node.get("height", 0) or 0) >= 32:
+                return True
+    return False
+
+
+def _screen_class_retry_reason(page_name: str, page_desc: str, children: list) -> str:
+    screen_class = _infer_screen_class(page_name, page_desc)
+    if not screen_class:
+        return ""
+
+    text_values = _collect_text_values_from_elements(children)
+    nodes = list(_iter_nodes(children))
+    text_joined = " ".join(text_values).lower()
+
+    if screen_class == "login":
+        has_email = "email" in text_joined
+        has_password = "password" in text_joined
+        has_login_cta = _has_button_like_action(nodes, ["login", "log in", "sign in", "continue with sso", "sso"])
+        if not (has_email and has_password and has_login_cta):
+            return "login screen is missing required auth fields or CTA"
+
+    if screen_class == "users_table":
+        has_heading = _contains_any_text(text_values, ["users", "user management"])
+        has_table_markers = _contains_any_text(text_values, ["email", "role", "status", "last login", "actions"])
+        has_toolbar = _has_button_like_action(nodes, ["add user", "filter", "search"])
+        if not (has_heading and has_table_markers and has_toolbar):
+            return "users page is missing heading, toolbar, or table structure"
+        if not _has_entity_like_table_content(text_values):
+            return "users page is missing realistic row content"
+
+    if screen_class == "add_user":
+        has_title = _contains_any_text(text_values, ["add new user", "invite user", "add user"])
+        has_email = "email" in text_joined
+        has_name = _contains_any_text(text_values, ["full name", "name"])
+        has_role = _contains_any_text(text_values, ["role", "administrator", "viewer", "editor"])
+        has_cta = _has_button_like_action(nodes, ["send invitation", "invite", "send invite", "save"])
+        if not (has_title and has_email and has_name and has_role and has_cta):
+            return "add-user screen is missing key form fields or primary CTA"
+
+    if screen_class == "dashboard":
+        has_heading = _contains_any_text(text_values, ["dashboard", "product dashboard"])
+        has_table_markers = _contains_any_text(text_values, ["bot name", "status", "phase", "last updated"])
+        has_primary_cta = _has_button_like_action(nodes, ["create new bot", "new bot", "create"])
+        if not (has_heading and has_table_markers and has_primary_cta):
+            return "dashboard screen is missing heading, primary CTA, or bot table structure"
+        if not _has_entity_like_table_content(text_values):
+            return "dashboard screen is missing realistic bot row content"
+
+    if screen_class == "menu_state":
+        has_menu_options = _contains_any_text(text_values, [
+            "update role", "revoke access", "reset password", "view details",
+            "bot builder", "test console", "test results", "approval panel", "final qa", "delivery",
+        ])
+        menu_surfaces = sum(1 for node in nodes if _is_action_menu_surface(node))
+        if not has_menu_options or menu_surfaces < 1:
+            return "menu/dropdown state is missing anchored menu options"
+
+    return ""
+
+
+def _needs_quality_retry(children: list, page_width: int, is_product_ui: bool, page_name: str = "", page_desc: str = "") -> tuple[bool, str]:
+    if not isinstance(children, list) or not children:
+        return True, "response contains no elements"
+
+    total = count_elements(children)
+    text_values = _collect_text_values_from_elements(children)
+    blank_shells = sum(1 for el in children if _looks_like_blank_shell(el))
+    if blank_shells > 0 and total <= 6:
+        return True, "large blank shell detected"
+    if _has_navbar_only_layout(children, page_width):
+        return True, "navbar-only layout detected"
+    if is_product_ui and total < 4:
+        return True, "too few elements for a full product screen"
+    if _has_oversized_surface_tail(children, page_width):
+        return True, "oversized background/surface tail detected"
+    if _looks_like_table_screen(children, is_product_ui):
+        footer_leak_count = _footer_leak_score(text_values)
+        if footer_leak_count >= 3 and not _has_entity_like_table_content(text_values):
+            return True, "table content is polluted by repeated footer/legal text"
+    screen_reason = _screen_class_retry_reason(page_name, page_desc, children)
+    if screen_reason:
+        return True, screen_reason
+    return False, ""
+
+
 async def generate_page_nodes(page: dict, project_title: str, user_prompt: str, layout_context: dict = None, screenshot_base64: str = None, screenshot_media_type: str = "image/png") -> dict:
     """
     Generate ONE page.
@@ -1407,6 +2459,7 @@ async def generate_page_nodes(page: dict, project_title: str, user_prompt: str, 
     page_desc   = page.get("description", page_name)
     images      = page.get("images", [])
     memory_context = page.get("memory_context") or {}
+    layout_context = _compact_layout_context(layout_context)
 
     log.info("CODING", f"Generating page={page_name!r}  size={page_width}×{page_height}")
 
@@ -1471,7 +2524,6 @@ async def generate_page_nodes(page: dict, project_title: str, user_prompt: str, 
                 f"  IMPORTANT: Reproduce this visual style as faithfully as possible.\n"
                 f"  Use colors, spacing, and component patterns that match this description.\n"
             )
-            # Still need a bg_color fallback — pick dark or light based on keywords
             bg_color = "#111111" if any(w in visual_style.lower() for w in ["dark", "black", "night"]) else "#FFFFFF"
             selected_theme = {
                 "name": "Screenshot Reference",
@@ -1616,36 +2668,90 @@ REMINDER:
 
 Generate the children array now. Output ONLY the JSON array.
 """
+    def _build_contents(extra_instruction: str = ""):
+        prompt = text_prompt
+        if extra_instruction:
+            prompt += (
+                "\nQUALITY CORRECTION:\n"
+                + extra_instruction
+                + "\nReturn a corrected full children array for the same screen.\n"
+            )
+        if screenshot_base64:
+            return [
+                {"inline_data": {"mime_type": screenshot_media_type, "data": screenshot_base64}},
+                f"This is the VISUAL REFERENCE screenshot. It may already be cropped to the real UI bounds.\n"
+                f"Study its colors, layout, sidebar, cards, topbar, typography and spacing carefully.\n"
+                f"Do not recreate screenshot whitespace, editor canvas, or outer framing beyond the actual product surface.\n\n"
+                f"Now generate Figma JSON elements for this frame:\n\n{prompt}"
+            ]
+        return [prompt]
 
-    if screenshot_base64:
-        contents = [
-            {"inline_data": {"mime_type": screenshot_media_type, "data": screenshot_base64}},
-            f"This is the VISUAL REFERENCE screenshot. It may already be cropped to the real UI bounds.\n"
-            f"Study its colors, layout, sidebar, cards, topbar, typography and spacing carefully.\n"
-            f"Do not recreate screenshot whitespace, editor canvas, or outer framing beyond the actual product surface.\n\n"
-            f"Now generate Figma JSON elements for this frame:\n\n{text_prompt}"
-        ]
-        log.info("CODING", f"Calling Gemini with screenshot vision for page={page_name!r}")
-    else:
-        contents = [text_prompt]
-        log.info("CODING", f"Calling Gemini (text only) for page={page_name!r}")
+    def _log_contents(section: str, contents):
+        if isinstance(contents, list):
+            lines = []
+            for item in contents:
+                if isinstance(item, str):
+                    lines.append(item)
+                elif isinstance(item, dict) and "inline_data" in item:
+                    inline = item.get("inline_data") or {}
+                    mime = inline.get("mime_type", "application/octet-stream")
+                    data_len = len(str(inline.get("data", "") or ""))
+                    lines.append(f"[inline_data mime={mime} chars={data_len}]")
+                else:
+                    lines.append(json.dumps(item, ensure_ascii=False))
+            _write_linewise_log(section, "\n".join(lines))
+        else:
+            _write_linewise_log(section, contents)
 
-    response = await generate_content_with_retry(
-        client=client,
-        model=planner_model,
-        contents=contents,
-        config=None,
-        log_tag="CODING",
-        action=f"Generate page nodes for {page_name!r}",
-    )
-    raw = response.text
-    log.debug("CODING", f"Raw response: {len(raw)} chars for page={page_name!r}")
+    log.info("CODING", f"Calling Gemini {'with screenshot vision' if screenshot_base64 else '(text only)'} for page={page_name!r}")
 
-    children = parse_coding_response(raw, page_name)
-    children = sanitize_generated_children(children)
-    children = enforce_reusable_structure(children)
-    children = stabilize_generated_children(children)
-    children = inject_image_urls(children)
+    retry_instruction = ""
+    for attempt in range(2):
+        request_contents = _build_contents(retry_instruction)
+        _log_contents(
+            f"CODING_PROMPT page={page_name!r} attempt={attempt}",
+            request_contents,
+        )
+        response = await generate_content_with_retry(
+            client=client,
+            model=planner_model,
+            contents=request_contents,
+            config=None,
+            log_tag="CODING",
+            action=f"Generate page nodes for {page_name!r}" + (f" retry={attempt}" if attempt else ""),
+        )
+        raw = response.text
+        log.debug("CODING", f"Raw response: {len(raw)} chars for page={page_name!r}")
+        _write_linewise_log(f"CODING_RAW_RESPONSE page={page_name!r} attempt={attempt}", raw)
+
+        children = parse_coding_response(raw, page_name)
+        children = sanitize_generated_children(children)
+        children = enforce_reusable_structure(children)
+        children = stabilize_generated_children(children)
+        children = normalize_compact_controls(children)
+        children = inject_image_urls(children)
+        _write_json_log(f"CODING_PARSED_CHILDREN page={page_name!r} attempt={attempt}", children)
+
+        retry_needed, retry_reason = _needs_quality_retry(
+            children,
+            page_width,
+            is_product_ui,
+            page_name=page_name,
+            page_desc=page_desc,
+        )
+        if not retry_needed:
+            break
+
+        retry_instruction = (
+            f"Previous output issue: {retry_reason}. "
+            f"Do not output a blank page, blank shell, navbar-only screen, or undersized button. "
+            f"Include the real main content for the planned use-case state and keep text and components aligned."
+        )
+        log.warn("CODING", f"Quality retry for page={page_name!r}: {retry_reason}")
+        write_log(
+            f"CODING_QUALITY_RETRY page={page_name!r} attempt={attempt} reason={retry_reason}",
+            filename=CODING_LOG_FILE,
+        )
 
     elem_count = count_elements(children)
     log.success("CODING",
@@ -1661,6 +2767,7 @@ Generate the children array now. Output ONLY the JSON array.
         "backgroundColor": bg_color,
         "children":        children,
     }
+    _write_json_log(f"CODING_FIGMA_JSON page={page_name!r}", frame)
 
     return {
         "page_id":   page["id"],

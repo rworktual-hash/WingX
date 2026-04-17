@@ -17,26 +17,51 @@ import asyncio
 from google import genai
 from dotenv import load_dotenv
 from llm_utils import generate_content_with_retry
+from log_writer import write_log
 import logger as log
 
 load_dotenv()
 
 planner_model = os.getenv("GEMINI_PLANNER_MODEL")
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY1"))
-PLANNER_EXTRACT_CONTEXT_CHAR_LIMIT = int(os.getenv("PLANNER_EXTRACT_CONTEXT_CHAR_LIMIT", "30000"))
-PLANNER_FLOW_CONTEXT_CHAR_LIMIT = int(os.getenv("PLANNER_FLOW_CONTEXT_CHAR_LIMIT", "40000"))
-PLANNER_FLOW_STATES_CHAR_LIMIT = int(os.getenv("PLANNER_FLOW_STATES_CHAR_LIMIT", "60000"))
+PLANNER_EXTRACT_CONTEXT_CHAR_LIMIT = int(os.getenv("PLANNER_EXTRACT_CONTEXT_CHAR_LIMIT", "22000"))
+PLANNER_FLOW_CONTEXT_CHAR_LIMIT = int(os.getenv("PLANNER_FLOW_CONTEXT_CHAR_LIMIT", "26000"))
+PLANNER_FLOW_STATES_CHAR_LIMIT = int(os.getenv("PLANNER_FLOW_STATES_CHAR_LIMIT", "32000"))
 PLANNER_LAYOUT_SECTION_LIMIT = int(os.getenv("PLANNER_LAYOUT_SECTION_LIMIT", "0"))
+PLANNER_LOG_FILE = os.getenv("FIGMA_LOG_FILENAME", "figma_debug.log")
+
+
+def _write_linewise_log(section: str, content, filename: str = PLANNER_LOG_FILE):
+    text = str(content or "")
+    lines = text.splitlines() or [text]
+    write_log(f"{section} | BEGIN", filename=filename)
+    for line in lines:
+        write_log(f"{section} | {line}", filename=filename)
+    write_log(f"{section} | END", filename=filename)
+
+
+def _write_json_log(section: str, payload, filename: str = PLANNER_LOG_FILE):
+    try:
+        text = json.dumps(payload, indent=2, ensure_ascii=False)
+    except Exception:
+        text = str(payload)
+    _write_linewise_log(section, text, filename=filename)
 
 STATE_EXTRACTOR_PROMPT = """
 You are a UI/UX analyst. You receive a content context from a requirements document.
 
 Extract EVERY distinct UI state that needs its own Figma frame, but organize them as feature flows.
 Each flow is a left-to-right user journey.
+If the document contains ordered use cases, workflow rows, or step-by-step sequences, preserve that sequence exactly.
+Treat each documented use case as a real product flow, not as optional inspiration.
 One frame per meaningful UI moment: default view, modal open, after action, error state, popup, panel, expanded card, secondary state.
 Cover every interaction: clicks, panels, drawers, menus, modals, transitions, result states.
 Do NOT merge meaningful states together.
 Do NOT omit workflows.
+Do NOT skip the first or middle step of a named workflow from the source material.
+Do NOT create separate frames for low-value chrome-only states such as notifications trays, profile/avatar menus, tiny dropdowns, or tooltips unless the source material explicitly makes them a key workflow step.
+Do NOT create standalone frames for trigger-only actions such as "click add user", "open menu", "tap filter", or "press next".
+If a step only describes the user action that opens the next screen, keep that action as metadata on the previous meaningful screen and make the next frame the resulting UI state instead.
 Only add annotations for important explanatory states, not every frame.
 Think about the product as one connected system:
 - infer the shared app/site shell before splitting into states
@@ -76,6 +101,7 @@ Generate complete feature flows, not isolated screens.
 Each feature flow should be a left-to-right user journey made of multiple screen states.
 Every screen must represent one meaningful UI moment in that journey.
 You may be given a simple prompt only, so you must infer the likely workflows and interaction states without hardcoding to any specific product domain.
+If the request or source material contains explicit use-case flows, workflow rows, or ordered steps, preserve that order exactly.
 
 CRITICAL RULES:
 1. Output ONLY valid JSON. No markdown, no explanations.
@@ -86,6 +112,9 @@ CRITICAL RULES:
 6. Use sequential screen names that make the flow obvious.
 7. Start each feature with the most natural default screen, then show the triggered states after it.
 8. Capture all important flows, menus, drawers, modals, expanded cards, secondary tabs, success/error states, and inline interaction states.
+8a. Do NOT invent standalone pages for low-value chrome-only states such as notifications panels, avatar/profile menus, tiny dropdowns, simple tooltips, or empty placeholder states unless the user explicitly asks for them or they are central to the workflow.
+8b. Do NOT create standalone pages whose only purpose is a trigger action such as "Click Add User", "Open Menu", "Tap Filter", or "Press Continue". Represent the trigger as `click_target_keywords` on the current meaningful page, and make the next page the resulting destination state.
+8c. Do NOT replace a documented flow with only one surviving screen. Keep the documented sequence unless two adjacent steps are true duplicates.
 9. Add annotations only for key explanatory moments, not every single frame.
 10. If the input references a screenshot or existing product screen, ignore any empty capture padding around the UI and plan the actual site/app surface as a full-size design.
 11. Include these metadata fields for each page:
@@ -152,14 +181,18 @@ You must THINK structurally, not literally.
 
 RULES:
 - Do NOT simply preserve the source order if it starts mid-flow.
+- If the source material contains an explicit ordered workflow or use-case sequence, preserve that sequence unless two states are actual duplicates.
 - Identify the natural parent screen or baseline state for each feature.
 - Reorder each feature into a clean left-to-right journey:
   baseline/default screen -> action state -> resulting state -> modal/panel/transition -> completion/error if relevant
 - Dedupe repeated or near-duplicate states.
 - Keep branches as separate subflows when needed, but keep them understandable.
+- Drop low-value chrome-only states such as notifications trays, avatar menus, tiny dropdowns, and tooltips unless they are explicitly requested or central to the feature's purpose.
+- Drop trigger-only intermediary states such as "click add", "tap next", "open menu", and "press filter" when they do not add new UI beyond the existing screen shell.
 - Do NOT hardcode a particular domain; reason from the supplied context.
 - Only include important annotations, not one on every frame.
 - Keep every meaningful interaction, but present it as a coherent product flow.
+- If one state only describes the click/tap/open action that leads to the next state, merge that action into the previous meaningful screen via `click_target_keywords` instead of keeping it as its own page.
 - Infer the shared information architecture of the product and keep it consistent across the feature flows.
 - Prefer stable primary destinations and shared shell patterns over screen-by-screen reinvention.
 - For website-style products, convert the plan into action branches from the home page instead of one long sequential sitemap.
@@ -225,6 +258,11 @@ NAV_LABEL_PATTERNS = [
     (("support", "help"), "Support"),
 ]
 FLOW_RESET_THRESHOLD = 18
+LOW_VALUE_CHROME_TOKENS = {
+    "notification panel", "notifications panel", "notification tray", "notifications tray",
+    "profile menu", "avatar menu", "user menu", "account menu",
+    "dropdown menu", "context menu", "tooltip", "hover card", "popover",
+}
 NAV_PREFERRED_ORDER = [
     "Home", "Shop", "Products", "Categories", "Pricing", "Demo", "Request Demo",
     "Get Started", "Login", "Sign In", "Account", "Cart", "Checkout", "Dashboard",
@@ -439,6 +477,24 @@ def _extract_explicit_workflow_rows(content_context: dict | None, user_prompt: s
         if steps:
             rows.append({"row_label": row_label, "steps": steps})
 
+    if not columns and not rows:
+        workflow_rows = []
+        for workflow_index, workflow in enumerate((content_context or {}).get("key_workflows", []) or [], start=1):
+            text = re.sub(r"\s+", " ", str(workflow or "").strip(" -–—:"))
+            if not text:
+                continue
+            if not any(token in text for token in ["->", "→", "=>", ","]):
+                continue
+            split_steps = [step for step in _split_explicit_steps(text) if step]
+            if len(split_steps) < 2:
+                continue
+            workflow_rows.append({
+                "row_label": f"Row {workflow_index}",
+                "steps": [{"name": step, "instruction": ""} for step in split_steps],
+            })
+        if workflow_rows:
+            rows = workflow_rows
+
     prompt_columns, prompt_rows, prompt_instructions = _parse_explicit_workflow_layout_from_prompt(user_prompt)
     if prompt_columns:
         if not columns:
@@ -513,6 +569,25 @@ def _explicit_step_height(product_type: str, step_name: str) -> int:
     return 1080
 
 
+def _is_click_only_explicit_step(step_name: str, instruction: str, has_next_step: bool) -> bool:
+    norm_name = _norm_text(step_name)
+    norm_instruction = _norm_text(instruction)
+    click_keywords = _explicit_step_click_keywords(step_name)
+    if not has_next_step or not click_keywords:
+        return False
+
+    low_value_instruction = (
+        not norm_instruction
+        or len(norm_instruction.split()) <= 4
+        or any(token in norm_instruction for token in ["click state", "button click", "open next", "trigger", "clicked"])
+    )
+
+    return low_value_instruction and any(
+        token in norm_name
+        for token in ["click", "clicked", "button click", "open"]
+    )
+
+
 def _build_explicit_step_pages(
     steps: list[dict],
     instruction_map: dict[str, str],
@@ -524,8 +599,7 @@ def _build_explicit_step_pages(
     row_index: int,
     column_meta: dict | None = None,
 ) -> list[dict]:
-    pages = []
-    flow_total = len(steps)
+    raw_steps = []
     column_meta = column_meta or {}
     column_label = column_meta.get("column_label", "")
     column_title = column_meta.get("column_title", "")
@@ -544,16 +618,33 @@ def _build_explicit_step_pages(
             continue
 
         instruction = step_instruction or instruction_map.get(_norm_text(step_name), "")
-        prev_name = ""
-        next_name = ""
-        if step_index > 1:
-            prev = steps[step_index - 2]
-            prev_name = str(prev.get("name", "")).strip() if isinstance(prev, dict) else str(prev).strip()
-        if step_index < flow_total:
-            nxt = steps[step_index]
-            next_name = str(nxt.get("name", "")).strip() if isinstance(nxt, dict) else str(nxt).strip()
+        has_next_step = step_index < len(steps)
+        if _is_click_only_explicit_step(step_name, instruction, has_next_step):
+            click_keywords = _explicit_step_click_keywords(step_name)
+            if raw_steps and click_keywords:
+                raw_steps[-1].setdefault("click_target_keywords", [])
+                for keyword in click_keywords:
+                    if keyword not in raw_steps[-1]["click_target_keywords"]:
+                        raw_steps[-1]["click_target_keywords"].append(keyword)
+            log.info("PLANNER", f"Skipping click-only explicit step page: {step_name!r}")
+            continue
 
-        click_keywords = _explicit_step_click_keywords(step_name)
+        raw_steps.append({
+            "step_name": step_name,
+            "instruction": instruction,
+            "click_target_keywords": _explicit_step_click_keywords(step_name),
+        })
+
+    pages = []
+    flow_total = len(raw_steps)
+    for step_index, step_meta in enumerate(raw_steps, start=1):
+        step_name = step_meta["step_name"]
+        instruction = step_meta["instruction"]
+
+        prev_name = raw_steps[step_index - 2]["step_name"] if step_index > 1 else ""
+        next_name = raw_steps[step_index]["step_name"] if step_index < flow_total else ""
+
+        click_keywords = list(step_meta.get("click_target_keywords", []) or [])
         annotation_text = ""
         if click_keywords and next_name:
             annotation_text = f"Click {', '.join(click_keywords[:2])} to open {next_name}."
@@ -1061,8 +1152,11 @@ def _build_app_interaction_flows(
             family_pages[family_label] = ordered_pages[:]
 
         for family, branch_states in family_pages.items():
-            branch_pages = [_clone_page_for_flow(anchor_page, f"{_norm_text(feature_name).replace(' ', '_') or 'flow'}_{_norm_text(family).replace(' ', '_') or 'branch'}_root")]
-            branch_pages.extend(_dedupe_branch_pages(base_pages[:1] + branch_states))
+            branch_pages = []
+            deduped_branch_states = _dedupe_branch_pages(base_pages[:1] + branch_states)
+            if _should_prepend_anchor_page(anchor_page, deduped_branch_states):
+                branch_pages.append(_clone_page_for_flow(anchor_page, f"{_norm_text(feature_name).replace(' ', '_') or 'flow'}_{_norm_text(family).replace(' ', '_') or 'branch'}_root"))
+            branch_pages.extend(deduped_branch_states)
             branch_name = f"{root_title} -> {family}"
             branch_goal = ""
             non_base_states = [page for page in branch_states if _page_kind(page) != "base"]
@@ -1129,7 +1223,7 @@ def _attach_project_structure(pages: list[dict]) -> tuple[list[dict], dict]:
             return
         slug = _norm_text(name).replace(" ", "_") or "root"
         pages_for_flow = []
-        if include_anchor:
+        if include_anchor and _should_prepend_anchor_page(anchor_page, branch_pages):
             pages_for_flow.append(_clone_page_for_flow(anchor_page, f"{slug}_start"))
         for idx, page in enumerate(branch_pages, start=1):
             pages_for_flow.append(_clone_page_for_flow(page, f"{slug}_{idx}"))
@@ -1432,6 +1526,10 @@ def _cleanup_flow_states(ui_states: list[dict]) -> list[dict]:
     if not cleaned:
         return []
 
+    cleaned = _drop_low_value_chrome_states(cleaned)
+    if not cleaned:
+        return []
+
     global_base = _global_baseline_screen(cleaned)
 
     grouped: dict[str, list[dict]] = {}
@@ -1458,6 +1556,146 @@ def _cleanup_flow_states(ui_states: list[dict]) -> list[dict]:
                 "click_target_keywords": state.get("click_target_keywords", []),
             })
     return ordered
+
+
+def _drop_low_value_chrome_states(ui_states: list[dict]) -> list[dict]:
+    kept = []
+    for state in ui_states:
+        haystack = " ".join([
+            str(state.get("name", "") or ""),
+            str(state.get("screen_title", "") or ""),
+            str(state.get("description", "") or ""),
+            " ".join(str(c or "") for c in (state.get("components") or [])),
+        ]).lower()
+
+        is_low_value = any(token in haystack for token in LOW_VALUE_CHROME_TOKENS)
+        has_explicit_trigger = bool(state.get("click_target_keywords"))
+        looks_substantial = any(
+            token in haystack
+            for token in ["table", "form", "editor", "chat", "dashboard", "settings", "details", "content", "list"]
+        )
+
+        if is_low_value and not has_explicit_trigger and not looks_substantial:
+            log.info("PLANNER", f"Dropping low-value chrome-only state: {state.get('name', '?')!r}")
+            continue
+        kept.append(state)
+    return kept
+
+
+def _page_has_meaningful_sections(page: dict) -> bool:
+    sections = page.get("sections") or []
+    meaningful_components = 0
+    for section in sections:
+        for component in section.get("components") or []:
+            token = _norm_text(component)
+            if token and token not in {"navbar", "topbar", "header", "footer", "logo"}:
+                meaningful_components += 1
+    return meaningful_components >= 2
+
+
+def _should_prepend_anchor_page(anchor_page: dict, branch_pages: list[dict]) -> bool:
+    if not anchor_page or not branch_pages:
+        return False
+    if not _page_has_meaningful_sections(anchor_page) and not anchor_page.get("images"):
+        return False
+    first_page = branch_pages[0] if branch_pages else {}
+    anchor_title = _norm_text(anchor_page.get("screen_title", "") or anchor_page.get("name", ""))
+    first_title = _norm_text(first_page.get("screen_title", "") or first_page.get("name", ""))
+    if anchor_title and first_title and anchor_title == first_title:
+        return False
+    return True
+
+
+def _is_action_only_page(page: dict) -> bool:
+    text = f" {_norm_text(' '.join([page.get('name', ''), page.get('screen_title', ''), page.get('description', ''), page.get('ui_state', '')]))} "
+    has_action_language = any(
+        token in text
+        for token in [
+            " click ",
+            " clicked ",
+            " button click ",
+            " tap ",
+            " press ",
+            " open menu ",
+            " open dropdown ",
+            " open popover ",
+        ]
+    )
+    if not has_action_language:
+        return False
+
+    description = _norm_text(page.get("description", ""))
+    description_is_action_only = (
+        not description
+        or len(description.split()) <= 6
+        or any(token in description for token in ["click", "clicked", "open", "tap", "press"])
+    )
+
+    title = _norm_text(page.get("screen_title", "") or page.get("name", ""))
+    title_is_trigger = any(
+        token in title
+        for token in [
+            "click",
+            "clicked",
+            "button click",
+            "open menu",
+            "open dropdown",
+            "tap",
+            "press",
+        ]
+    )
+
+    return (
+        (description_is_action_only or title_is_trigger)
+        and not _page_has_meaningful_sections(page)
+        and not page.get("images")
+    )
+
+
+def _drop_action_only_pages(pages: list[dict]) -> list[dict]:
+    if not pages:
+        return []
+
+    filtered = []
+    for page in pages:
+        if _is_action_only_page(page):
+            click_keywords = page.get("click_target_keywords") or _explicit_step_click_keywords(
+                page.get("screen_title", "") or page.get("name", "")
+            )
+            if filtered and click_keywords:
+                filtered[-1].setdefault("click_target_keywords", [])
+                for keyword in click_keywords:
+                    if keyword not in filtered[-1]["click_target_keywords"]:
+                        filtered[-1]["click_target_keywords"].append(keyword)
+            log.info("PLANNER", f"Dropping action-only page: {page.get('name', '?')!r}")
+            continue
+        filtered.append(page)
+
+    if not filtered:
+        return []
+
+    grouped: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for page in filtered:
+        feature_key = page.get("feature_group", "") or page.get("flow_group", "") or "__ungrouped__"
+        if feature_key not in grouped:
+            grouped[feature_key] = []
+            order.append(feature_key)
+        grouped[feature_key].append(page)
+
+    recalculated = []
+    for feature_key in order:
+        group_pages = grouped[feature_key]
+        group_total = len(group_pages)
+        for idx, page in enumerate(group_pages, start=1):
+            cloned = dict(page)
+            cloned["flow_step"] = idx
+            cloned["flow_total"] = group_total
+            cloned["flow_group_step"] = idx
+            cloned["flow_group_total"] = group_total
+            recalculated.append(cloned)
+
+    return recalculated
 
 
 def _normalise_pages(pages: list[dict]) -> list[dict]:
@@ -1497,7 +1735,7 @@ def _normalise_pages(pages: list[dict]) -> list[dict]:
         p.setdefault("row_label", "")
         p.setdefault("row_order", 0)
         normalised.append(p)
-    return normalised
+    return _drop_action_only_pages(normalised)
 
 
 async def _run_flow_synthesis(ui_states: list[dict], content_context: dict) -> list[dict]:
@@ -1510,6 +1748,7 @@ async def _run_flow_synthesis(ui_states: list[dict], content_context: dict) -> l
         "{ui_states}",
         _limit_text(state_str, PLANNER_FLOW_STATES_CHAR_LIMIT),
     )
+    _write_linewise_log("PLANNER_FLOW_SYNTHESIS_PROMPT", prompt)
 
     response = await generate_content_with_retry(
         client=client,
@@ -1519,7 +1758,10 @@ async def _run_flow_synthesis(ui_states: list[dict], content_context: dict) -> l
         log_tag="PLANNER",
         action="Run flow synthesis",
     )
-    return _parse_state_list(response.text)
+    _write_linewise_log("PLANNER_FLOW_SYNTHESIS_RAW_RESPONSE", response.text)
+    parsed_states = _parse_state_list(response.text)
+    _write_json_log("PLANNER_FLOW_SYNTHESIS_PARSED_STATES", parsed_states)
+    return parsed_states
 
 
 def _call_flow_page(
@@ -1816,6 +2058,12 @@ def _required_screen_specs(content_context: dict | None) -> list[dict]:
     candidates = []
     candidates.extend(content_context.get("pages_or_screens") or [])
     candidates.extend(item.get("name", "") for item in (content_context.get("screen_instructions") or []) if isinstance(item, dict))
+    for workflow in (content_context.get("key_workflows") or []):
+        text = str(workflow or "").strip()
+        if not text:
+            continue
+        if any(token in text for token in ["->", "→", "=>", ","]):
+            candidates.extend(_split_explicit_steps(text))
 
     for raw in candidates:
         name = re.sub(r"\s+", " ", str(raw or "").strip(" -–—:"))
@@ -1835,6 +2083,99 @@ def _required_screen_specs(content_context: dict | None) -> list[dict]:
         })
 
     return required
+
+
+def _explicit_screen_candidates(content_context: dict | None) -> list[str]:
+    if not content_context:
+        return []
+
+    seen = set()
+    candidates = []
+    for raw in (content_context.get("pages_or_screens") or []):
+        name = re.sub(r"\s+", " ", str(raw or "").strip(" -–—:"))
+        norm = _norm_text(name)
+        if not norm or norm in seen:
+            continue
+        if len(name) > 80 or len(norm.split()) > 10:
+            continue
+        seen.add(norm)
+        candidates.append(name)
+
+    for item in (content_context.get("screen_instructions") or []):
+        if not isinstance(item, dict):
+            continue
+        name = re.sub(r"\s+", " ", str(item.get("name", "") or "").strip(" -–—:"))
+        norm = _norm_text(name)
+        if not norm or norm in seen:
+            continue
+        if len(name) > 80 or len(norm.split()) > 10:
+            continue
+        seen.add(norm)
+        candidates.append(name)
+
+    return candidates
+
+
+def _match_state_to_explicit_screen(state: dict, explicit_name: str) -> bool:
+    explicit_norm = _norm_text(explicit_name)
+    if not explicit_norm:
+        return False
+    hay = _norm_text(" ".join([
+        str(state.get("name", "") or ""),
+        str(state.get("screen_title", "") or ""),
+        str(state.get("feature_group", "") or ""),
+        str(state.get("description", "") or ""),
+    ]))
+    return explicit_norm in hay or hay in explicit_norm
+
+
+def _should_preserve_explicit_screens(content_context: dict | None, ui_states: list[dict]) -> bool:
+    explicit_names = _explicit_screen_candidates(content_context)
+    if len(explicit_names) < 2 or not ui_states:
+        return False
+
+    matched = 0
+    for explicit_name in explicit_names:
+        if any(_match_state_to_explicit_screen(state, explicit_name) for state in ui_states):
+            matched += 1
+    return matched >= min(2, len(explicit_names))
+
+
+def _preserve_explicit_screen_order(ui_states: list[dict], content_context: dict | None) -> list[dict]:
+    explicit_names = _explicit_screen_candidates(content_context)
+    if not explicit_names:
+        return ui_states
+
+    ordered = []
+    used = set()
+
+    for explicit_name in explicit_names:
+        for idx, state in enumerate(ui_states):
+            if idx in used:
+                continue
+            if _match_state_to_explicit_screen(state, explicit_name):
+                ordered.append(state)
+                used.add(idx)
+                break
+
+    for idx, state in enumerate(ui_states):
+        if idx not in used:
+            ordered.append(state)
+
+    total = len(ordered)
+    preserved = []
+    for idx, state in enumerate(ordered, start=1):
+        cloned = dict(state)
+        cloned["flow_step"] = idx
+        cloned["flow_total"] = total
+        cloned["flow_group_step"] = idx
+        cloned["flow_group_total"] = total
+        cloned["branch_root"] = ""
+        cloned["branch_trigger"] = ""
+        cloned["branch_goal"] = ""
+        cloned["branch_kind"] = "explicit_document"
+        preserved.append(cloned)
+    return preserved
 
 
 def _screen_feature_and_title(name: str) -> tuple[str, str]:
@@ -1871,7 +2212,6 @@ def _ensure_required_document_pages(pages: list[dict], content_context: dict | N
         norm_name = _norm_text(spec["name"])
         if not norm_name or norm_name in existing:
             continue
-
         feature_group, screen_title = _screen_feature_and_title(spec["name"])
         description = spec["instruction"] or f"Required screen from the source requirements: {screen_title}."
         page_id = f"required_{idx}_{re.sub(r'[^a-z0-9]+', '_', norm_name).strip('_') or 'screen'}"
@@ -1910,28 +2250,38 @@ async def run_planner(
     mode: str | None = None,
 ) -> dict:
     log.info("PLANNER", f"Starting — prompt: {user_prompt[:80]!r}")
+    _write_linewise_log("PLANNER_USER_PROMPT", user_prompt)
+    if content_context:
+        _write_json_log("PLANNER_CONTENT_CONTEXT", content_context)
+    if layout_context:
+        _write_json_log("PLANNER_LAYOUT_CONTEXT", layout_context)
 
     explicit_columns, explicit_rows, explicit_instruction_map = _extract_explicit_workflow_rows(content_context, user_prompt)
+
     if explicit_columns or explicit_rows:
         if explicit_columns:
             log.info("PLANNER", f"EXPLICIT COLUMN MODE — preserving {len(explicit_columns)} column(s) exactly")
+
             parsed = _build_plan_from_explicit_columns(
                 columns=explicit_columns,
                 instruction_map=explicit_instruction_map,
                 user_prompt=user_prompt,
                 content_context=content_context,
             )
+
         else:
             log.info("PLANNER", f"EXPLICIT FLOW MODE — preserving {len(explicit_rows)} workflow row(s) exactly")
+
             parsed = _build_plan_from_explicit_rows(
                 rows=explicit_rows,
                 instruction_map=explicit_instruction_map,
                 user_prompt=user_prompt,
                 content_context=content_context,
             )
-        parsed["pages"] = _ensure_required_document_pages(parsed["pages"], content_context)
+
         parsed["pages"] = _normalise_pages(parsed["pages"])
         parsed["total_pages"] = len(parsed["pages"])
+        _write_json_log("PLANNER_FINAL_PLAN", parsed)
         log.success("PLANNER",
             f"Plan ready — {parsed['project_title']!r}  frames={parsed['total_pages']}"
         )
@@ -1955,11 +2305,13 @@ async def run_planner(
 
     if has_content:
         log.info("PLANNER", "STRUCTURED MODE — extracting UI states from document")
+        
         context_str      = json.dumps(content_context, indent=2)
         extractor_prompt = STATE_EXTRACTOR_PROMPT.replace(
             "{content_context}",
             _limit_text(context_str, PLANNER_EXTRACT_CONTEXT_CHAR_LIMIT),
         )
+        _write_linewise_log("PLANNER_STATE_EXTRACT_PROMPT", extractor_prompt)
 
         ext_response = await generate_content_with_retry(
             client=client,
@@ -1969,12 +2321,30 @@ async def run_planner(
             log_tag="PLANNER",
             action="Extract structured UI states",
         )
+        _write_linewise_log("PLANNER_STATE_EXTRACT_RAW_RESPONSE", ext_response.text)
+
         ui_states    = _parse_state_list(ext_response.text)
+        _write_json_log("PLANNER_STATE_EXTRACT_PARSED_STATES", ui_states)
 
         if ui_states:
             log.info("PLANNER", f"Extracted {len(ui_states)} UI states")
             for s in ui_states[:20]:
                 log.info("PLANNER", f"  → {s.get('name','?')}")
+
+            if _should_preserve_explicit_screens(content_context, ui_states):
+                log.info("PLANNER", "EXPLICIT SCREEN PRESERVE MODE — keeping document screen names/order and skipping flow synthesis")
+                preserved_states = _preserve_explicit_screen_order(ui_states, content_context)
+                _write_json_log("PLANNER_PRESERVED_EXPLICIT_STATES", preserved_states)
+                parsed = _build_plan_from_states(preserved_states, user_prompt)
+                parsed["pages"] = _ensure_required_document_pages(parsed["pages"], content_context)
+                parsed["pages"] = _normalise_pages(parsed["pages"])
+                parsed["total_pages"] = len(parsed["pages"])
+                parsed["navigation_model"] = {"layout": "topbar", "primary_links": []}
+                _write_json_log("PLANNER_FINAL_PLAN", parsed)
+                log.success("PLANNER",
+                    f"Plan ready — {parsed['project_title']!r}  frames={parsed['total_pages']} (explicit preserve mode)"
+                )
+                return parsed
 
             synthesized = await _run_flow_synthesis(ui_states, content_context or {})
             if synthesized:
@@ -1989,6 +2359,7 @@ async def run_planner(
             parsed["pages"] = _normalise_pages(parsed["pages"])
             parsed["pages"], parsed["navigation_model"] = _attach_project_structure(parsed["pages"])
             parsed["total_pages"] = len(parsed["pages"])
+            _write_json_log("PLANNER_FINAL_PLAN", parsed)
             log.success("PLANNER",
                 f"Plan ready — {parsed['project_title']!r}  frames={parsed['total_pages']}"
             )
@@ -2006,6 +2377,7 @@ async def run_planner(
         parsed["pages"] = _normalise_pages(_cleanup_flow_states(parsed["pages"]) or parsed["pages"])
         parsed["pages"], parsed["navigation_model"] = _attach_project_structure(parsed["pages"])
         parsed["total_pages"] = len(parsed["pages"])
+        _write_json_log("PLANNER_FINAL_PLAN", parsed)
         log.success("PLANNER",
             f"Plan ready — project={parsed['project_title']!r}  pages={parsed['total_pages']}",
             extra={"mode": mode or "replicate", "total_pages": parsed["total_pages"]}
@@ -2015,6 +2387,7 @@ async def run_planner(
     # GENERIC FLOW MODE
     log.info("PLANNER", "FLOW MODE — generic flow plan from prompt")
     full_prompt = FREE_PLANNER_PROMPT.replace("{user_prompt}", user_prompt)
+    _write_linewise_log("PLANNER_GENERIC_FLOW_PROMPT", full_prompt)
 
     response = await generate_content_with_retry(
         client=client,
@@ -2026,6 +2399,7 @@ async def run_planner(
     )
     raw_text  = response.text
     log.debug("PLANNER", f"Raw response: {len(raw_text)} chars")
+    _write_linewise_log("PLANNER_GENERIC_FLOW_RAW_RESPONSE", raw_text)
 
     parsed = parse_plan(raw_text)
     parsed["pages"] = _ensure_required_document_pages(parsed["pages"], content_context)
@@ -2036,6 +2410,7 @@ async def run_planner(
         f"Plan ready — project={parsed['project_title']!r}  pages={parsed['total_pages']}",
         extra={"total_pages": parsed["total_pages"]}
     )
+    _write_json_log("PLANNER_FINAL_PLAN", parsed)
     for p in parsed["pages"]:
         log.info("PLANNER",
             f"  → {p['name']}  ({p['width']}×{p['height']}px)  images={len(p.get('images',[]))}",
