@@ -1,0 +1,26 @@
+.DS_Store
+
+# Environment
+.env
+.env.*
+
+# Node / frontend
+node_modules/
+dist/
+out/
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Logs
+*.log
+*.log.*
+logs/
+backend/logs/
+
+# Local generated artifacts / backups
+*.zip
+

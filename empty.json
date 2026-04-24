@@ -1,0 +1,96 @@
+{
+    "pages":{
+        "page1":{
+            "page_position":[x1,y1,x2,y2],
+            "images_in_place":{
+                "images":{
+                    "image1":{
+                        "image_position":[x1,y1,x2,y2],
+                        "image_size":[px,px],
+                        "placeholder_name":"electronics",
+                        "image_prompt":"generate a chip image for main page background"
+                    },
+                    "image2":{
+                        "image_position":[x1,y1,x2,y2],
+                        "image_size":[px,px],
+                        "placeholder_name":"iphone 15",
+                        "image_prompt":"generate a iphone 15 image"
+                    },
+                    "image3":{
+                        "image_position":[x1,y1,x2,y2],
+                        "image_size":[px,px],
+                        "placeholder_name":"iphone 14",
+                        "image_prompt":"generate a iphone 14 image"
+                    },
+                    "image4":{
+                        "image_position":[x1,y1,x2,y2],
+                        "image_size":[px,px],
+                        "placeholder_name":"iphone 13",
+                        "image_prompt":"generate a iphone 13 image"
+                    }
+                }
+                
+            }
+        },
+        "page2":{
+            "page_position":[x1,y1,x2,y2],
+            "images_in_place":{
+                    "image1":{
+                        "image_position":[x1,y1,x2,y2],
+                        "image_size":[px,px],
+                        "placeholder_name":"electronics",
+                        "image_prompt":"generate a chip image for main page background"
+                    },
+                    "image2":{
+                        "image_position":[x1,y1,x2,y2],
+                        "image_size":[px,px],
+                        "placeholder_name":"iphone 15",
+                        "image_prompt":"generate a iphone 15 image"
+                    },
+                    "image3":{
+                        "image_position":[x1,y1,x2,y2],
+                        "image_size":[px,px],
+                        "placeholder_name":"iphone 14",
+                        "image_prompt":"generate a iphone 14 image"
+                    },
+                    "image4":{
+                        "image_position":[x1,y1,x2,y2],
+                        "image_size":[px,px],
+                        "placeholder_name":"iphone 13",
+                        "image_prompt":"generate a iphone 13 image"
+                    }
+                }
+        },
+        "page3":{
+            "page_position":[x1,y1,x2,y2],
+            "images_in_place":{
+                    "image1":{
+                        "image_position":[x1,y1,x2,y2],
+                        "image_size":[px,px],
+                        "placeholder_name":"electronics",
+                        "image_prompt":"generate a chip image for main page background"
+                    },
+                    "image2":{
+                        "image_position":[x1,y1,x2,y2],
+                        "image_size":[px,px],
+                        "placeholder_name":"iphone 15",
+                        "image_prompt":"generate a iphone 15 image"
+                    },
+                    "image3":{
+                        "image_position":[x1,y1,x2,y2],
+                        "image_size":[px,px],
+                        "placeholder_name":"iphone 14",
+                        "image_prompt":"generate a iphone 14 image"
+                    },
+                    "image4":{
+                        "image_position":[x1,y1,x2,y2],
+                        "image_size":[px,px],
+                        "placeholder_name":"iphone 13",
+                        "image_prompt":"generate a iphone 13 image"
+                    }
+                }
+        },
+
+        // more pages 
+    }
+}

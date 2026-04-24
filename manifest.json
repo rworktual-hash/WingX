@@ -1,0 +1,23 @@
+{
+  "name": "Design Pilot",
+  "id": "1604161984918021743",
+  "api": "1.0.0",
+  "main": "code.js",
+  "capabilities": [],
+  "enableProposedApi": false,
+  "documentAccess": "dynamic-page",
+  "editorType": [
+    "figma"
+  ],
+  "ui": "ui.html",
+  "networkAccess": {
+    "allowedDomains": [
+      "http://localhost:9000",
+      "https://picsum.photos"
+      ],
+      "reasoning": "This plugin needs to access the backend API to generate UI layouts and images."
+  }
+}
+
+
+

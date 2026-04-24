@@ -1,0 +1,2821 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Worktual AI · dark theme</title>
+    <style>
+        /* === MODERN DARK THEME (CLEAN) === */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg-primary: #0A0A0F;
+            --bg-secondary: #14141F;
+            --bg-tertiary: #1E1E2D;
+            --accent-primary: #6366F1;
+            --accent-secondary: #8B5CF6;
+            --accent-glow: rgba(99, 102, 241, 0.3);
+            --success: #10B981;
+            --warning: #F59E0B;
+            --error: #EF4444;
+            --text-primary: #FFFFFF;
+            --text-secondary: #A0A0B0;
+            --text-tertiary: #6B6B7B;
+            --border-color: #2A2A3A;
+            --card-shadow: 0 20px 35px -8px rgba(0, 0, 0, 0.5);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background:
+                radial-gradient(circle at 20% 20%, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 80% 70%, rgba(139, 92, 246, 0.08) 0%, transparent 40%);
+            pointer-events: none; z-index: -1;
+        }
+
+        .container { max-width: 100%; padding: 16px; position: relative; z-index: 1; }
+
+        .glass-card {
+            background: rgba(20, 20, 31, 0.7);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            box-shadow: var(--card-shadow);
+        }
+
+        .glass-effect {
+            background: linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 100%);
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border: 1px solid rgba(255,255,255,0.03);
+        }
+
+        /* === HEADER === */
+        .header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 16px; padding: 14px 18px;
+            background: rgba(10, 10, 15, 0.8); backdrop-filter: blur(10px);
+            border-radius: 18px; border: 1px solid rgba(255,255,255,0.03);
+        }
+
+        .logo-container { display: flex; align-items: center; gap: 12px; }
+
+        .logo-icon {
+            width: 38px; height: 38px;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            border-radius: 11px; display: flex; align-items: center; justify-content: center;
+            font-size: 20px; box-shadow: 0 8px 20px var(--accent-glow);
+        }
+
+        .logo-text h1 {
+            font-size: 17px; font-weight: 600;
+            background: linear-gradient(135deg, #FFFFFF, #C0C0FF);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+        }
+
+        .logo-text p { font-size: 10px; color: var(--text-secondary); }
+
+        /* === TAB NAVIGATION === */
+        .tab-nav {
+            display: flex; gap: 4px; margin-bottom: 16px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 16px; padding: 5px;
+        }
+
+        .tab-btn {
+            flex: 1; padding: 10px 4px;
+            background: none; border: none;
+            color: var(--text-tertiary);
+            font-size: 10px; font-weight: 500;
+            border-radius: 12px; cursor: pointer;
+            transition: all 0.25s ease;
+            display: flex; align-items: center; justify-content: center; gap: 4px;
+        }
+
+        .tab-btn:hover { color: var(--text-secondary); background: rgba(255,255,255,0.04); }
+
+        .tab-btn.active {
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            color: #fff;
+            box-shadow: 0 4px 15px var(--accent-glow);
+        }
+
+        .tab-btn .tab-icon { font-size: 13px; }
+
+        /* === TAB CONTENT === */
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
+        /* === connection card === */
+        .connection-card {
+            padding: 18px; margin-bottom: 16px;
+            position: relative; overflow: hidden;
+        }
+
+        .connection-card::after {
+            content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+            background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary), transparent);
+        }
+
+        .status-row {
+            display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;
+        }
+
+        .status-indicator { display: flex; align-items: center; gap: 8px; }
+
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--success); box-shadow: 0 0 15px var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+
+        .status-text { font-size: 12px; font-weight: 500; color: var(--text-secondary); }
+
+        .url-display {
+            background: var(--bg-tertiary); padding: 10px 14px; border-radius: 12px;
+            font-family: 'SF Mono', 'Monaco', monospace; font-size: 11px;
+            color: var(--accent-primary); border: 1px solid var(--border-color);
+            margin-bottom: 12px; word-break: break-all;
+        }
+
+        .url-display::before { content: '🌐'; margin-right: 8px; opacity: 0.7; }
+
+        /* === prompt card === */
+        .prompt-card {
+            padding: 20px; margin-bottom: 16px;
+            background: linear-gradient(135deg, var(--bg-secondary), var(--bg-tertiary));
+        }
+
+        .section-title {
+            display: flex; align-items: center; gap: 8px; margin-bottom: 14px;
+            font-size: 12px; font-weight: 500; color: var(--text-secondary); letter-spacing: 0.5px;
+        }
+
+        .section-title span {
+            background: var(--accent-primary); width: 20px; height: 20px;
+            border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 12px;
+        }
+
+        .input-wrapper { position: relative; margin-bottom: 16px; }
+
+        .input-wrapper input {
+            width: 100%; background: var(--bg-primary); border: 2px solid var(--border-color);
+            color: var(--text-primary); padding: 14px 18px; padding-right: 110px;
+            border-radius: 16px; font-size: 13px; transition: all 0.3s ease;
+        }
+
+        .input-wrapper input:focus {
+            outline: none; border-color: var(--accent-primary);
+            box-shadow: 0 0 0 4px var(--accent-glow);
+        }
+
+        .input-wrapper input::placeholder { color: var(--text-tertiary); font-size: 12px; }
+
+        .generate-btn {
+            position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            border: none; color: white; padding: 9px 20px; border-radius: 12px;
+            font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.3s ease;
+            box-shadow: 0 4px 15px var(--accent-glow);
+        }
+
+        .generate-btn:hover { transform: translateY(-50%) scale(1.05); box-shadow: 0 8px 25px var(--accent-glow); }
+        .generate-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: translateY(-50%); box-shadow: none; }
+
+        /* === example chips === */
+        .examples-grid {
+            display: grid; grid-template-columns: repeat(2, 1fr);
+            gap: 7px; margin: 12px 0 16px 0;
+        }
+
+        .example-chip {
+            background: var(--bg-primary); padding: 10px 12px; border-radius: 14px;
+            font-size: 11px; cursor: pointer; transition: all 0.2s ease;
+            border: 1px solid var(--border-color);
+            display: flex; align-items: center; gap: 7px; color: var(--text-secondary);
+        }
+
+        .example-chip:hover {
+            border-color: var(--accent-primary); transform: translateY(-2px);
+            box-shadow: 0 6px 18px rgba(99, 102, 241, 0.2); color: var(--text-primary);
+        }
+
+        .example-chip .emoji { font-size: 15px; }
+
+        /* === selection bar === */
+        .selection-bar {
+            background: linear-gradient(90deg, var(--bg-tertiary), transparent);
+            padding: 13px 17px; border-radius: 16px; margin-bottom: 16px;
+            display: flex; align-items: center; justify-content: space-between;
+            border-left: 4px solid var(--accent-primary);
+        }
+
+        .selection-info { display: flex; align-items: center; gap: 8px; }
+
+        .selection-badge {
+            background: var(--accent-primary); padding: 4px 11px;
+            border-radius: 40px; font-size: 12px; font-weight: 600;
+        }
+
+        /* === action grid === */
+        .action-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 16px; }
+
+        .action-btn {
+            background: var(--bg-tertiary); border: 1px solid var(--border-color);
+            padding: 12px; border-radius: 16px; color: var(--text-primary);
+            font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.3s ease;
+            display: flex; align-items: center; justify-content: center; gap: 7px;
+        }
+
+        .action-btn:hover {
+            border-color: var(--accent-primary);
+            background: rgba(99, 102, 241, 0.1); transform: scale(1.02);
+        }
+
+        .action-btn .icon { font-size: 15px; }
+
+        /* === stats grid === */
+        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin: 16px 0; }
+
+        .stat-card {
+            background: var(--bg-tertiary); padding: 13px; border-radius: 16px;
+            text-align: center; border: 1px solid var(--border-color);
+        }
+
+        .stat-value {
+            font-size: 17px; font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+        }
+
+        .stat-label { font-size: 10px; color: var(--text-tertiary); margin-top: 4px; }
+
+        /* === response card === */
+        .response-card { padding: 18px; margin-bottom: 16px; background: var(--bg-secondary); }
+
+        .response-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+
+        .response-title { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
+
+        .processing-indicator {
+            display: flex; align-items: center; gap: 8px;
+            background: rgba(99, 102, 241, 0.1); padding: 6px 11px;
+            border-radius: 40px; font-size: 11px; color: var(--accent-primary);
+        }
+
+        .spinner {
+            width: 13px; height: 13px;
+            border: 2px solid var(--accent-glow); border-top-color: var(--accent-primary);
+            border-radius: 50%; animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .response-content {
+            background: var(--bg-primary); border-radius: 16px; padding: 14px;
+            font-family: 'SF Mono', monospace; font-size: 11px; color: var(--text-secondary);
+            white-space: pre-wrap; word-break: break-word;
+            max-height: 220px; overflow-y: auto; border: 1px solid var(--border-color);
+        }
+
+        /* === message box === */
+        .message-box {
+            padding: 12px 16px; border-radius: 14px; margin: 12px 0;
+            font-size: 12px; display: none; animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message-box.success { background: rgba(16, 185, 129, 0.1); border: 1px solid var(--success); color: var(--success); }
+        .message-box.error { background: rgba(239, 68, 68, 0.1); border: 1px solid var(--error); color: var(--error); }
+        .message-box.warning { background: rgba(245, 158, 11, 0.1); border: 1px solid var(--warning); color: var(--warning); }
+
+        /* === footer === */
+        .footer {
+            margin-top: 20px; padding: 18px;
+            background: rgba(10, 10, 15, 0.5); backdrop-filter: blur(10px);
+            border-radius: 18px; border: 1px solid rgba(255,255,255,0.03);
+        }
+
+        .footer-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 12px; }
+
+        .footer-item { display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--text-tertiary); }
+        .footer-item .dot { width: 4px; height: 4px; background: var(--accent-primary); border-radius: 50%; }
+
+        .footer-url {
+            font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-secondary);
+            text-align: center; padding: 10px; background: var(--bg-tertiary);
+            border-radius: 10px; border: 1px solid var(--border-color); word-break: break-all;
+        }
+
+        /* ═══════════════════════════════════════════════════════════
+           ANALYZE TAB STYLES
+        ═══════════════════════════════════════════════════════════ */
+
+        .analyze-card {
+            padding: 20px; margin-bottom: 14px;
+            background: linear-gradient(135deg, var(--bg-secondary), var(--bg-tertiary));
+            border-radius: 20px; border: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .drop-zone {
+            border: 2px dashed var(--border-color);
+            border-radius: 18px; padding: 28px 20px;
+            text-align: center; cursor: pointer;
+            transition: all 0.3s ease;
+            background: var(--bg-primary);
+            position: relative; margin-bottom: 14px;
+        }
+
+        .drop-zone:hover, .drop-zone.drag-over {
+            border-color: var(--accent-primary);
+            background: rgba(99, 102, 241, 0.05);
+            box-shadow: 0 0 0 4px var(--accent-glow);
+        }
+
+        .drop-zone input[type="file"] {
+            position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+        }
+
+        .drop-icon { font-size: 34px; margin-bottom: 10px; display: block; }
+        .drop-title { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px; }
+        .drop-subtitle { font-size: 11px; color: var(--text-tertiary); line-height: 1.5; }
+        .drop-subtitle span { color: var(--accent-primary); font-weight: 500; }
+
+        .file-type-badges { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
+
+        .badge { padding: 3px 9px; border-radius: 20px; font-size: 10px; font-weight: 600; border: 1px solid; }
+        .badge-img { background: rgba(99,102,241,0.1); border-color: rgba(99,102,241,0.4); color: #818CF8; }
+        .badge-doc { background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.4); color: #34D399; }
+        .badge-pdf { background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.4); color: #F87171; }
+
+        .upload-preview { display: none; margin-bottom: 14px; background: var(--bg-secondary); border-radius: 18px; border: 1px solid var(--border-color); overflow: hidden; }
+        .upload-preview.visible { display: block; }
+        .preview-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border-color); }
+        .preview-label { font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+        .preview-remove-btn { background: rgba(239,68,68,0.15); border: none; color: #F87171; border-radius: 8px; padding: 4px 10px; font-size: 11px; cursor: pointer; transition: all 0.2s; }
+        .preview-remove-btn:hover { background: rgba(239,68,68,0.3); }
+        .preview-body { padding: 12px; }
+        .preview-image-wrap { width: 100%; max-height: 180px; overflow: hidden; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: var(--bg-tertiary); }
+        .preview-image-wrap img { max-width: 100%; max-height: 180px; object-fit: contain; border-radius: 10px; }
+        .preview-doc-wrap { display: flex; align-items: center; gap: 12px; padding: 8px; }
+        .preview-doc-icon { font-size: 32px; }
+        .preview-doc-info { flex: 1; }
+        .preview-doc-name { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 3px; }
+        .preview-doc-meta { font-size: 11px; color: var(--text-tertiary); }
+        .preview-text-snippet { background: var(--bg-tertiary); border-radius: 10px; padding: 10px; font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-secondary); max-height: 80px; overflow: hidden; margin-top: 8px; line-height: 1.5; border: 1px solid var(--border-color); }
+
+        .analyze-instruction-wrap { margin-bottom: 14px; }
+        .analyze-instruction-label { font-size: 11px; color: var(--text-secondary); margin-bottom: 7px; display: flex; align-items: center; gap: 6px; }
+        .analyze-instruction-label::before { content: ''; display: inline-block; width: 3px; height: 12px; background: var(--accent-primary); border-radius: 2px; }
+        .analyze-instruction-wrap textarea { width: 100%; background: var(--bg-primary); border: 2px solid var(--border-color); color: var(--text-primary); padding: 12px 14px; border-radius: 14px; font-size: 12px; resize: vertical; min-height: 70px; max-height: 140px; font-family: inherit; transition: all 0.3s ease; line-height: 1.5; }
+        .analyze-instruction-wrap textarea:focus { outline: none; border-color: var(--accent-primary); box-shadow: 0 0 0 4px var(--accent-glow); }
+        .analyze-instruction-wrap textarea::placeholder { color: var(--text-tertiary); font-size: 11px; }
+
+        .mode-selector { display: flex; gap: 7px; margin-bottom: 14px; }
+        .mode-btn { flex: 1; padding: 9px 6px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 13px; color: var(--text-tertiary); font-size: 11px; font-weight: 500; cursor: pointer; transition: all 0.25s ease; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+        .mode-btn .mode-icon { font-size: 16px; }
+        .mode-btn:hover { border-color: var(--accent-primary); color: var(--text-secondary); }
+        .mode-btn.selected { border-color: var(--accent-primary); background: rgba(99, 102, 241, 0.12); color: var(--text-primary); box-shadow: 0 0 0 1px var(--accent-primary); }
+
+        .analyze-cta-btn { width: 100%; padding: 15px; border: none; border-radius: 16px; background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary)); color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; transition: all 0.3s ease; box-shadow: 0 6px 20px var(--accent-glow); display: flex; align-items: center; justify-content: center; gap: 8px; letter-spacing: 0.3px; }
+        .analyze-cta-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 30px var(--accent-glow); }
+        .analyze-cta-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+
+        .analyze-progress { display: none; margin-bottom: 14px; background: var(--bg-primary); border-radius: 16px; border: 1px solid var(--border-color); padding: 16px; }
+        .analyze-progress.visible { display: block; }
+        .progress-step { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 12px; color: var(--text-tertiary); transition: all 0.3s; }
+        .progress-step:last-child { border-bottom: none; }
+        .progress-step.done { color: var(--success); }
+        .progress-step.active { color: var(--text-primary); }
+        .progress-step.error { color: var(--error); }
+        .step-icon { font-size: 15px; min-width: 22px; text-align: center; }
+        .step-spinner { width: 14px; height: 14px; border: 2px solid rgba(99,102,241,0.3); border-top-color: var(--accent-primary); border-radius: 50%; animation: spin 1s linear infinite; min-width: 14px; }
+
+        .analysis-result { display: none; margin-bottom: 14px; background: var(--bg-primary); border-radius: 16px; border: 1px solid rgba(99,102,241,0.3); padding: 14px; }
+        .analysis-result.visible { display: block; }
+        .analysis-result-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12px; font-weight: 600; color: var(--accent-primary); }
+        .analysis-result-body { font-size: 11px; color: var(--text-secondary); line-height: 1.6; max-height: 130px; overflow-y: auto; }
+
+        .analyze-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+        .analyze-chip { padding: 5px 11px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 20px; font-size: 10px; color: var(--text-secondary); cursor: pointer; transition: all 0.2s ease; }
+        .analyze-chip:hover { border-color: var(--accent-primary); color: var(--text-primary); background: rgba(99,102,241,0.1); }
+
+        /* ═══════════════════════════════════════════════════════════
+           EXPORT PANEL STYLES
+        ═══════════════════════════════════════════════════════════ */
+
+        /* Loading state */
+        .ep-loading {
+            text-align: center; padding: 52px 20px; color: var(--text-tertiary);
+        }
+        .ep-loading .big-spinner {
+            width: 34px; height: 34px;
+            border: 3px solid rgba(99,102,241,0.2);
+            border-top-color: var(--accent-primary);
+            border-radius: 50%; animation: spin 0.9s linear infinite;
+            margin: 0 auto 14px;
+        }
+        .ep-loading p { font-size: 13px; }
+
+        /* Section label */
+        .ep-section-label {
+            font-size: 10px; font-weight: 700; letter-spacing: 0.8px;
+            color: var(--text-tertiary); text-transform: uppercase;
+            margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+        }
+        .ep-section-label::before {
+            content: ''; width: 3px; height: 12px;
+            background: var(--accent-primary); border-radius: 2px;
+        }
+
+        /* Frame cards */
+        .ep-frame-card {
+            background: var(--bg-secondary);
+            border: 1.5px solid var(--border-color);
+            border-radius: 14px; overflow: hidden;
+            transition: border-color 0.15s; margin-bottom: 8px;
+        }
+        .ep-frame-card-header {
+            display: flex; align-items: center; gap: 10px;
+            padding: 11px 13px; user-select: none;
+        }
+
+        .ep-frame-info { flex: 1; min-width: 0; }
+        .ep-frame-name {
+            font-size: 12px; font-weight: 600; color: var(--text-primary);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .ep-frame-meta { font-size: 10px; color: var(--text-tertiary); margin-top: 1px; }
+
+        .ep-remove-btn {
+            background: none; border: none; color: var(--text-tertiary);
+            font-size: 14px; cursor: pointer; padding: 2px 5px;
+            border-radius: 6px; flex-shrink: 0; line-height: 1;
+            transition: all 0.15s;
+        }
+        .ep-remove-btn:hover { background: rgba(239,68,68,0.15); color: var(--error); }
+
+        .ep-type-pill {
+            font-size: 10px; padding: 2px 8px; border-radius: 20px;
+            font-weight: 700; flex-shrink: 0;
+        }
+        .ep-type-page    { color: #6366F1; background: rgba(99,102,241,0.12); }
+        .ep-type-modal   { color: #A78BFA; background: rgba(167,139,250,0.12); }
+        .ep-type-sidebar { color: #38BDF8; background: rgba(56,189,248,0.12); }
+        .ep-type-other   { color: #6B7280; background: rgba(107,114,128,0.10); }
+
+
+        .ep-prompt-toggle {
+            background: none; border: none; color: var(--text-tertiary);
+            font-size: 13px; cursor: pointer; padding: 2px 5px;
+            border-radius: 6px; flex-shrink: 0; transition: all 0.15s;
+        }
+        .ep-prompt-toggle:hover { color: var(--accent-primary); background: rgba(99,102,241,0.1); }
+
+        /* Per-frame prompt */
+        .ep-frame-prompt-body {
+            display: none; padding: 0 13px 12px;
+            border-top: 1px solid rgba(255,255,255,0.04);
+        }
+        .ep-frame-prompt-body.open { display: block; }
+        .ep-frame-prompt-label {
+            font-size: 10px; color: var(--text-tertiary); margin: 9px 0 5px;
+        }
+        .ep-frame-prompt-ta {
+            width: 100%; background: var(--bg-primary);
+            border: 1px solid var(--border-color); color: var(--text-primary);
+            padding: 9px 11px; border-radius: 10px; font-size: 11px;
+            font-family: inherit; resize: vertical;
+            min-height: 56px; max-height: 110px; line-height: 1.5;
+            transition: border-color 0.15s;
+        }
+        .ep-frame-prompt-ta:focus { outline: none; border-color: var(--accent-primary); }
+        .ep-frame-prompt-ta::placeholder { color: var(--text-tertiary); }
+
+        /* Global prompt */
+        .ep-global-wrap {
+            background: var(--bg-secondary); border: 1px solid var(--border-color);
+            border-radius: 14px; padding: 13px; margin-bottom: 16px;
+        }
+        .ep-global-ta {
+            width: 100%; background: var(--bg-primary);
+            border: 1px solid var(--border-color); color: var(--text-primary);
+            padding: 10px 12px; border-radius: 10px; font-size: 11px;
+            font-family: inherit; resize: vertical;
+            min-height: 60px; max-height: 120px; line-height: 1.5;
+            transition: border-color 0.15s;
+        }
+        .ep-global-ta:focus { outline: none; border-color: var(--accent-primary); }
+        .ep-global-ta::placeholder { color: var(--text-tertiary); }
+
+        /* ── Button Linker ── */
+        .ep-linker-wrap {
+            background: var(--bg-secondary); border: 1px solid var(--border-color);
+            border-radius: 14px; padding: 13px; margin-bottom: 16px;
+        }
+
+        /* Live element inspector (shown when user selects in Figma) */
+        .ep-inspector {
+            display: none; margin-bottom: 14px;
+            background: linear-gradient(135deg, rgba(99,102,241,0.06), rgba(139,92,246,0.04));
+            border: 1px solid rgba(99,102,241,0.25);
+            border-radius: 14px; padding: 12px 14px;
+        }
+        .ep-inspector.visible { display: block; }
+        .ep-inspector-title {
+            font-size: 10px; font-weight: 700; letter-spacing: 0.6px;
+            color: var(--accent-primary); text-transform: uppercase; margin-bottom: 10px;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .ep-inspector-title::before {
+            content: ''; width: 6px; height: 6px; border-radius: 50%;
+            background: var(--accent-primary);
+            box-shadow: 0 0 6px var(--accent-primary);
+            animation: pulse 1.5s infinite;
+        }
+        .ep-inspector-node {
+            display: flex; align-items: center; gap: 10px;
+            background: var(--bg-tertiary); border-radius: 10px; padding: 9px 11px;
+            margin-bottom: 8px;
+        }
+        .ep-node-icon { font-size: 16px; flex-shrink: 0; }
+        .ep-node-info { flex: 1; min-width: 0; }
+        .ep-node-name {
+            font-size: 12px; font-weight: 600; color: var(--text-primary);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .ep-node-parent { font-size: 10px; color: var(--text-tertiary); margin-top: 1px; }
+
+        /* === BULK LINK MODAL === */
+        .ep-bulk-modal-backdrop {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.75); z-index: 9999;
+            align-items: center; justify-content: center;
+        }
+        .ep-bulk-modal-backdrop.visible { display: flex; }
+        .ep-bulk-modal {
+            background: var(--bg-secondary); border: 1px solid var(--border-color);
+            border-radius: 18px; padding: 20px; width: 340px; max-height: 80vh;
+            display: flex; flex-direction: column; gap: 12px;
+            box-shadow: 0 24px 48px rgba(0,0,0,0.6);
+        }
+        .ep-bulk-modal h3 { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+        .ep-bulk-subtitle { font-size: 11px; color: var(--text-tertiary); }
+        .ep-bulk-list { overflow-y: auto; max-height: 300px; display: flex; flex-direction: column; gap: 6px; }
+        .ep-bulk-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 8px 10px; border-radius: 10px;
+            background: var(--bg-tertiary); border: 1px solid var(--border-color);
+            cursor: pointer; transition: border-color 0.15s;
+        }
+        .ep-bulk-item:hover { border-color: var(--accent-primary); }
+        .ep-bulk-item input[type=checkbox] { accent-color: var(--accent-primary); width: 15px; height: 15px; flex-shrink: 0; cursor: pointer; }
+        .ep-bulk-item-info { flex: 1; min-width: 0; }
+        .ep-bulk-item-name { font-size: 12px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .ep-bulk-item-page { font-size: 10px; color: var(--text-tertiary); margin-top: 1px; }
+        .ep-bulk-unique-row {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 10px; border-radius: 10px;
+            background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.25);
+            font-size: 11px; color: var(--text-secondary);
+        }
+        .ep-bulk-unique-row input[type=checkbox] { accent-color: var(--accent-primary); width: 15px; height: 15px; flex-shrink: 0; cursor: pointer; }
+        .ep-bulk-actions { display: flex; gap: 8px; }
+        .ep-bulk-actions button {
+            flex: 1; padding: 9px; border-radius: 10px; border: none;
+            font-size: 12px; font-weight: 700; cursor: pointer; transition: opacity 0.2s;
+        }
+        .ep-bulk-actions button:hover { opacity: 0.85; }
+        .ep-bulk-btn-cancel { background: var(--bg-tertiary); color: var(--text-secondary); }
+        .ep-bulk-btn-link   { background: var(--accent-primary); color: white; }
+
+        .ep-link-btn {
+            flex-shrink: 0;
+            background: var(--accent-primary);
+            border: none; color: white;
+            padding: 6px 13px; border-radius: 8px;
+            font-size: 11px; font-weight: 700; cursor: pointer;
+            transition: all 0.2s;
+        }
+        .ep-link-btn:hover { background: var(--accent-secondary); transform: scale(1.03); }
+        .ep-link-btn.ep-picking {
+            background: var(--warning); animation: pulse 1s infinite;
+        }
+
+        /* Link picking mode banner */
+        .ep-picking-banner {
+            display: none; background: rgba(245,158,11,0.12);
+            border: 1px solid rgba(245,158,11,0.4);
+            border-radius: 12px; padding: 11px 14px; margin-bottom: 12px;
+            font-size: 11px; color: var(--warning);
+            animation: slideIn 0.25s ease;
+        }
+        .ep-picking-banner.visible { display: flex; align-items: center; gap: 8px; }
+        .ep-picking-banner .ep-cancel-pick {
+            margin-left: auto; background: rgba(245,158,11,0.2);
+            border: none; color: var(--warning);
+            padding: 3px 10px; border-radius: 7px;
+            font-size: 10px; font-weight: 700; cursor: pointer;
+        }
+
+        /* Established link rows */
+        .ep-link-row {
+            display: flex; align-items: center; gap: 8px;
+            padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .ep-link-row:last-child { border-bottom: none; }
+        .ep-link-row-source {
+            flex: 1; min-width: 0;
+        }
+        .ep-link-row-source-name {
+            font-size: 11px; font-weight: 600; color: var(--text-primary);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .ep-link-row-source-frame {
+            font-size: 10px; color: var(--text-tertiary);
+        }
+        .ep-link-arrow { color: var(--accent-primary); font-size: 13px; flex-shrink: 0; }
+        .ep-link-row-target {
+            flex: 1; min-width: 0;
+        }
+        .ep-link-row-target-name {
+            font-size: 11px; font-weight: 600; color: var(--success);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .ep-link-remove {
+            background: rgba(239,68,68,0.1); border: none; color: #F87171;
+            padding: 3px 8px; border-radius: 7px; font-size: 10px; cursor: pointer;
+        }
+        .ep-link-remove:hover { background: rgba(239,68,68,0.25); }
+
+        .ep-linker-empty {
+            text-align: center; padding: 18px 12px;
+            font-size: 11px; color: var(--text-tertiary); line-height: 1.6;
+        }
+
+        /* Generate button */
+        .ep-generate-btn {
+            width: 100%; padding: 15px; border: none; border-radius: 15px;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            color: #fff; font-size: 14px; font-weight: 700; cursor: pointer;
+            transition: all 0.25s; box-shadow: 0 6px 22px var(--accent-glow);
+            display: flex; align-items: center; justify-content: center; gap: 9px;
+            letter-spacing: 0.3px; margin-bottom: 12px;
+        }
+        .ep-generate-btn:hover { transform: translateY(-2px); box-shadow: 0 12px 30px var(--accent-glow); }
+        .ep-generate-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+
+        /* Progress + result */
+        .ep-progress {
+            display: none; background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 14px; padding: 14px; margin-bottom: 14px;
+        }
+        .ep-progress.visible { display: block; }
+
+        .ep-result-card {
+            display: none; background: var(--bg-secondary);
+            border: 1px solid rgba(16,185,129,0.3);
+            border-radius: 14px; padding: 14px; margin-bottom: 14px;
+        }
+        .ep-result-card.visible { display: block; }
+
+        .ep-section-header-row {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        /* ── Log filter buttons ── */
+        .log-filter-btn {
+            padding: 5px 12px; background: var(--bg-tertiary);
+            border: 1px solid var(--border-color); border-radius: 20px;
+            color: var(--text-tertiary); font-size: 10px; font-weight: 500;
+            cursor: pointer; transition: all 0.2s ease;
+        }
+        .log-filter-btn:hover { border-color: var(--accent-primary); color: var(--text-secondary); }
+        .log-filter-btn.active { background: rgba(99,102,241,0.15); border-color: var(--accent-primary); color: var(--text-primary); }
+
+        /* ── Log entry rows ── */
+        .log-row {
+            display: flex; gap: 8px; padding: 3px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            animation: logFadeIn 0.2s ease;
+        }
+        @keyframes logFadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+        .log-ts   { color: #4B5563; min-width: 72px; }
+        .log-lvl  { min-width: 46px; font-weight: 700; }
+        .log-tag  { min-width: 90px; color: #818CF8; }
+        .log-msg  { color: #D1D5DB; flex: 1; word-break: break-word; }
+        .log-lvl-INFO  { color: #60A5FA; }
+        .log-lvl-OK    { color: #34D399; }
+        .log-lvl-WARN  { color: #FBBF24; }
+        .log-lvl-ERROR { color: #F87171; }
+        .log-lvl-DEBUG { color: #9CA3AF; }
+    </style>
+</head>
+<body>
+    <div class="container">
+
+        <!-- ── HEADER ── -->
+        <div class="header glass-effect">
+            <div class="logo-container">
+                <div class="logo-icon">✨</div>
+                <div class="logo-text">
+                    <h1>Worktual AI</h1>
+                    <p>dark edition · figma plugin</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── TAB NAVIGATION ── -->
+        <div class="tab-nav">
+            <button class="tab-btn active" onclick="switchTab('generate')" id="tab-generate">
+                <span class="tab-icon">🎨</span> Generate
+            </button>
+            <button class="tab-btn" onclick="switchTab('analyze')" id="tab-analyze">
+                <span class="tab-icon">🔍</span> Analyze
+            </button>
+            <button class="tab-btn" onclick="switchTab('export')" id="tab-export">
+                <span class="tab-icon">⚡</span> Export
+            </button>
+            <button class="tab-btn" onclick="switchTab('settings')" id="tab-settings">
+                <span class="tab-icon">⚙️</span> Settings
+            </button>
+            <button class="tab-btn" onclick="switchTab('logs')" id="tab-logs">
+                <span class="tab-icon">📋</span> Logs
+                <span id="logsBadge" style="display:none;background:var(--error);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:20px;margin-left:2px;line-height:1.4;">0</span>
+            </button>
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════
+             TAB 1: GENERATE
+        ══════════════════════════════════════════════════════════ -->
+        <div class="tab-panel active" id="panel-generate">
+
+            <!-- Connection status -->
+            <div class="connection-card glass-card">
+                <div class="status-row">
+                    <div class="status-indicator">
+                        <div class="status-dot"></div>
+                        <span class="status-text">Service...</span>
+                    </div>
+                    <span class="status-text" id="connectionStatus">Ready</span>
+                </div>
+                <div class="url-display" id="backendUrl">Loading...</div>
+                <button class="action-btn" onclick="testConnection()" id="testBtn" style="width:100%;">
+                    <span class="icon">🔄</span> Test connection
+                </button>
+            </div>
+
+            <!-- Prompt card -->
+            <div class="prompt-card glass-card">
+                <div class="section-title"><span>🎨</span> DESIGN PROMPT</div>
+                <div class="input-wrapper">
+                    <input type="text" id="promptInput"
+                        placeholder="e.g. modern dashboard with cards..."
+                        onkeypress="if(event.key === 'Enter') generateDesign()">
+                    <button class="generate-btn" onclick="generateDesign()" id="generateBtn">
+                        Generate →
+                    </button>
+                </div>
+            </div>
+
+            <!-- Example chips -->
+            <div class="examples-grid">
+                <div class="example-chip" onclick="setExample('sleek mobile navigation bar with gradient')">
+                    <span class="emoji">📱</span> mobile navbar
+                </div>
+                <div class="example-chip" onclick="setExample('neumorphic card with stats and icon')">
+                    <span class="emoji">💳</span> neumorphic card
+                </div>
+                <div class="example-chip" onclick="setExample('dark themed landing page hero section')">
+                    <span class="emoji">🌑</span> dark hero
+                </div>
+                <div class="example-chip" onclick="setExample('settings panel with toggles and sliders')">
+                    <span class="emoji">⚙️</span> settings panel
+                </div>
+            </div>
+
+            <!-- Selection info -->
+            <div class="selection-bar">
+                <div class="selection-info">
+                    <span class="selection-badge" id="selectionCount">0</span>
+                    <span>elements selected</span>
+                </div>
+                <button class="action-btn" onclick="clearPrompt()" style="padding:7px 14px;">Clear</button>
+            </div>
+
+            <!-- Action grid -->
+            <div class="action-grid">
+                <button class="action-btn" onclick="clearPrompt()">
+                    <span class="icon">🗑️</span> Clear
+                </button>
+                <button class="action-btn" onclick="copyPrompt()" id="copyBtn">
+                    <span class="icon">📋</span> Copy
+                </button>
+            </div>
+
+            <!-- Export to React — now navigates to Export tab -->
+            <button class="action-btn" id="exportBtn" onclick="openExportPanel()"
+                style="width:100%; margin-bottom:14px; border-color: #6366F1; background: rgba(99,102,241,0.1); font-weight:600;">
+                <span class="icon">⚡</span> Export to React / Vite
+            </button>
+
+            <!-- Stats -->
+            <div class="stats-grid" id="statsGrid" style="display: none;">
+                <div class="stat-card">
+                    <div class="stat-value" id="genTime">-</div>
+                    <div class="stat-label">time</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="elementCount">-</div>
+                    <div class="stat-label">elements</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="modelUsed">-</div>
+                    <div class="stat-label">engine</div>
+                </div>
+            </div>
+
+            <!-- Status -->
+            <div class="response-card glass-card" id="statusCard" style="display:none;">
+                <div class="response-header">
+                    <div class="response-title">
+                        <span>📡</span> Status
+                    </div>
+                    <div class="processing-indicator" id="processingIndicator" style="display:none;">
+                        <div class="spinner"></div> Processing...
+                    </div>
+                </div>
+                <div class="response-content" id="status">Ready</div>
+            </div>
+
+            <!-- Messages -->
+            <div class="message-box" id="messageBox"></div>
+
+        </div><!-- /panel-generate -->
+
+        <!-- ══════════════════════════════════════════════════════════
+             TAB 2: ANALYZE
+        ══════════════════════════════════════════════════════════ -->
+        <div class="tab-panel" id="panel-analyze">
+
+            <!-- File Drop Zone (Multi-file) -->
+            <div class="analyze-card glass-card">
+                <div class="section-title"><span>📁</span> UPLOAD FILES</div>
+                <div class="drop-zone" id="dropZone"
+                    ondragover="handleDragOver(event)"
+                    ondragleave="handleDragLeave(event)"
+                    ondrop="handleDrop(event)">
+                    <input type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.doc,.docx"
+                        onchange="handleFileSelect(event)">
+                    <span class="drop-icon">📂</span>
+                    <div class="drop-title">Drop files here or click to browse</div>
+                    <div class="drop-subtitle">Supports <span>images, PDFs, docs</span> · Multiple files OK</div>
+                    <div class="file-type-badges">
+                        <span class="badge badge-img">PNG</span>
+                        <span class="badge badge-img">JPG</span>
+                        <span class="badge badge-pdf">PDF</span>
+                        <span class="badge badge-doc">TXT</span>
+                        <span class="badge badge-doc">CSV</span>
+                        <span class="badge badge-doc">DOCX</span>
+                    </div>
+                </div>
+
+                <!-- File queue grid (rendered dynamically) -->
+                <div id="fileQueueGrid" style="margin-bottom:12px;"></div>
+
+            </div>
+
+            <!-- Analyze Mode Selector -->
+            <div class="analyze-card glass-card">
+                <div class="section-title"><span>🎛️</span> ANALYSIS MODE</div>
+                <div class="mode-selector">
+                    <button class="mode-btn selected" onclick="setMode('replicate')" id="mode-replicate">
+                        <span class="mode-icon">🪞</span> Replicate
+                    </button>
+                    <button class="mode-btn" onclick="setMode('improve')" id="mode-improve">
+                        <span class="mode-icon">✨</span> Improve
+                    </button>
+                    <button class="mode-btn" onclick="setMode('inspire')" id="mode-inspire">
+                        <span class="mode-icon">💡</span> Inspire
+                    </button>
+                </div>
+                <div id="modeDescription" style="font-size:11px; color:var(--text-secondary); line-height:1.5; padding:8px; background:var(--bg-primary); border-radius:10px; border:1px solid var(--border-color);">
+                    🪞 <strong style="color:var(--text-secondary)">Replicate:</strong> Recreate the uploaded design faithfully as a Figma layout.
+                </div>
+            </div>
+
+            <!-- Quick prompt chips -->
+            <div class="analyze-card glass-card">
+                <div class="section-title"><span>⚡</span> QUICK INSTRUCTIONS</div>
+                <div class="analyze-chips">
+                    <span class="analyze-chip" onclick="appendInstruction('Dark background with neon accents')">🌑 Dark UI</span>
+                    <span class="analyze-chip" onclick="appendInstruction('Use modern card layout')">🃏 Cards</span>
+                    <span class="analyze-chip" onclick="appendInstruction('Make it mobile-friendly')">📱 Mobile</span>
+                    <span class="analyze-chip" onclick="appendInstruction('Use a luxury color palette')">💎 Luxury</span>
+                    <span class="analyze-chip" onclick="appendInstruction('Improve typography and spacing')">✍️ Typography</span>
+                    <span class="analyze-chip" onclick="appendInstruction('Add bold hero section')">🦸 Hero</span>
+                </div>
+                <div class="analyze-instruction-wrap">
+                    <div class="analyze-instruction-label">Additional instructions applied to every file</div>
+                    <textarea id="analyzeInstruction"
+                        placeholder="e.g. 'Dark blue palette with gold accents, modern SaaS style'"
+                    ></textarea>
+                </div>
+            </div>
+
+            <!-- Batch progress -->
+            <div id="batchProgressWrap" style="display:none;margin-bottom:14px;">
+                <div class="glass-card" style="padding:14px;margin-bottom:10px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <span style="font-size:12px;font-weight:600;color:var(--text-primary);">🚀 Batch Processing</span>
+                        <span id="batchOverallLabel" style="font-size:11px;color:var(--accent-primary);font-weight:600;">0 / 0</span>
+                    </div>
+                    <div style="background:var(--bg-tertiary);border-radius:6px;height:6px;overflow:hidden;">
+                        <div id="batchProgressBar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--accent-primary),var(--accent-secondary));border-radius:6px;transition:width 0.4s ease;"></div>
+                    </div>
+                    <div id="batchCurrentLabel" style="font-size:10px;color:var(--text-tertiary);margin-top:6px;">Starting...</div>
+                </div>
+                <div id="batchFileRows" style="background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:16px;overflow:hidden;max-height:340px;overflow-y:auto;"></div>
+            </div>
+
+            <!-- Analyze CTA -->
+            <button class="analyze-cta-btn" id="analyzeBtn" onclick="runBatchAnalyze()">
+                <span>🚀</span> <span id="analyzeBtnLabel">Analyze &amp; Generate Designs</span>
+            </button>
+
+            <div class="message-box" id="analyzeMessageBox"></div>
+
+        </div><!-- /panel-analyze -->
+
+        <!-- ══════════════════════════════════════════════════════════
+             TAB 3: EXPORT PANEL
+             Flow: scan frames → frame cards + prompts + button linker → generate
+        ══════════════════════════════════════════════════════════ -->
+        <div class="tab-panel" id="panel-export">
+
+            <!-- Loading skeleton -->
+            <div id="ep-loading" class="ep-loading">
+                <div class="big-spinner"></div>
+                <p>Scanning your Figma frames…</p>
+            </div>
+
+            <!-- Main content (hidden until data ready) -->
+            <div id="ep-content" style="display:none;">
+
+                <!-- Header row -->
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+                    <div>
+                        <div style="font-size:15px;font-weight:700;color:var(--text-primary);" id="ep-project-name">My App</div>
+                        <div style="font-size:11px;color:var(--text-tertiary);margin-top:2px;" id="ep-frame-count">0 frames</div>
+                    </div>
+                    <button onclick="epRescan()" style="background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.3);color:var(--accent-primary);padding:6px 13px;border-radius:10px;font-size:11px;font-weight:600;cursor:pointer;">
+                        🔄 Rescan
+                    </button>
+                </div>
+
+                <!-- ── SECTION 1: Frame cards ── -->
+                <div class="ep-section-label">Frames &amp; Components</div>
+                <div class="ep-section-header-row">
+                    <span style="font-size:11px;color:var(--text-tertiary);">✏️ Click a card to add instructions for that frame</span>
+                    <button id="ep-add-frame-btn"
+                        onclick="epStartAddFramePick()"
+                        style="background:rgba(99,102,241,0.12);border:1px solid var(--accent-primary);color:var(--accent-primary);padding:5px 12px;border-radius:8px;font-size:10px;font-weight:600;cursor:pointer;transition:all 0.2s;flex-shrink:0;"
+                        title="Click a frame in the Figma canvas to add it">
+                        + Add Frame
+                    </button>
+                </div>
+                <!-- Add-frame picking banner -->
+                <div id="ep-add-frame-banner" style="display:none;align-items:center;gap:8px;padding:8px 12px;margin-bottom:8px;background:rgba(99,102,241,0.1);border:1px solid var(--accent-primary);border-radius:10px;font-size:11px;color:var(--accent-primary);">
+                    <span>🎯</span>
+                    <span style="flex:1;">Click any frame in the Figma canvas to add it…</span>
+                    <button onclick="epCancelAddFramePick()" style="background:rgba(99,102,241,0.15);border:1px solid var(--accent-primary);color:var(--accent-primary);border-radius:6px;padding:3px 9px;font-size:10px;cursor:pointer;">Cancel</button>
+                </div>
+                <div id="ep-frame-list" style="margin-bottom:18px;"></div>
+
+                <!-- ── SECTION 2: Global prompt ── -->
+                <div class="ep-global-wrap">
+                    <div class="ep-section-label" style="margin-bottom:8px;">Global Prompt</div>
+                    <textarea id="ep-global-prompt" class="ep-global-ta"
+                        placeholder="Instructions applied to every page — e.g. 'Dark theme with indigo accents, modern SaaS style, smooth hover transitions on all buttons'"
+                    ></textarea>
+                </div>
+
+                <!-- ── SECTION 3: Button / Element Linker ── -->
+                <div class="ep-linker-wrap">
+                    <div class="ep-section-label" style="margin-bottom:8px;">
+                        Button Linker
+                        <span style="color:var(--text-tertiary);font-weight:400;font-size:10px;text-transform:none;letter-spacing:0;">— select element in Figma to link it</span>
+                    </div>
+
+                    <!-- Link-picking mode banner -->
+                    <div class="ep-picking-banner" id="ep-picking-banner">
+                        <span>🎯 Click any frame, component or button in Figma to set as link target…</span>
+                        <button class="ep-cancel-pick" onclick="epCancelPick()">Cancel</button>
+                    </div>
+
+                    <!-- Live element inspector — shown when user selects in Figma -->
+                    <div class="ep-inspector" id="ep-inspector">
+                        <div class="ep-inspector-title">Selected in Figma</div>
+                        <div id="ep-inspector-nodes"></div>
+                    </div>
+
+                    <!-- Established link rows -->
+                    <div id="ep-links-list">
+                        <div class="ep-linker-empty">
+                            Select any element in Figma while this panel is open.<br>
+                            If it's inside an included frame, it will appear here so you can link it.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ── Generate button ── -->
+                <button class="ep-generate-btn" id="ep-gen-btn" onclick="epGenerate()">
+                    <span>⚡</span> Generate React / Vite App
+                </button>
+
+                <!-- Progress -->
+                <div class="ep-progress" id="ep-progress">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <span style="font-size:12px;font-weight:600;color:var(--text-primary);">⚙️ Generating…</span>
+                        <span id="ep-progress-frac" style="font-size:11px;color:var(--accent-primary);font-weight:600;"></span>
+                    </div>
+                    <div style="background:var(--bg-tertiary);border-radius:6px;height:5px;overflow:hidden;margin-bottom:8px;">
+                        <div id="ep-progress-bar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--accent-primary),var(--accent-secondary));border-radius:6px;transition:width 0.3s;"></div>
+                    </div>
+                    <div id="ep-progress-msg" style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;">Starting…</div>
+                    <div id="ep-log-feed" style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:9px;padding:7px 10px;font-family:'SF Mono',monospace;font-size:10px;height:120px;overflow-y:auto;line-height:1.6;"></div>
+                </div>
+
+                <!-- Result / download -->
+                <div class="ep-result-card" id="ep-result">
+                    <div style="color:var(--success);font-size:13px;font-weight:600;margin-bottom:10px;" id="ep-result-msg"></div>
+                    <div id="ep-result-files" style="background:var(--bg-primary);border-radius:9px;padding:10px;max-height:190px;overflow-y:auto;margin-bottom:12px;font-size:11px;font-family:monospace;"></div>
+                    <button onclick="downloadAllFiles()" style="width:100%;padding:13px;background:linear-gradient(135deg,#6366F1,#8B5CF6);border:none;border-radius:13px;color:#fff;font-size:14px;font-weight:600;cursor:pointer;">
+                        ⬇️ Download All Files (.zip)
+                    </button>
+                </div>
+
+            </div><!-- /ep-content -->
+
+        </div><!-- /panel-export -->
+
+        <!-- ══════════════════════════════════════════════════════════
+             TAB 4: SETTINGS
+        ══════════════════════════════════════════════════════════ -->
+        <div class="tab-panel" id="panel-settings">
+            <div class="analyze-card glass-card" style="margin-bottom:14px;">
+                <div class="section-title"><span>🌐</span> BACKEND URL</div>
+                <div class="url-display" id="settingsBackendUrl">http://localhost:9000</div>
+                <div style="font-size:11px; color:var(--text-tertiary); margin-top:8px; line-height:1.6;">
+                    Currently using local backend. Ensure your FastAPI server is running on port 9000.
+                </div>
+            </div>
+
+            <div class="analyze-card glass-card" style="margin-bottom:14px;">
+                <div class="section-title"><span>ℹ️</span> PLUGIN INFO</div>
+                <div style="font-size:11px; color:var(--text-tertiary); line-height:2;">
+                    <div>Plugin: <span style="color:var(--text-secondary)">Worktual AI</span></div>
+                    <div>Version: <span style="color:var(--text-secondary)">2.0.0</span></div>
+                    <div>Engine: <span style="color:var(--text-secondary)">Gemini AI</span></div>
+                    <div>Features: <span style="color:var(--text-secondary)">Generate, Analyze, Export</span></div>
+                </div>
+            </div>
+
+            <div class="analyze-card glass-card">
+                <div class="section-title"><span>🔗</span> QUICK ACTIONS</div>
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                    <button class="action-btn" onclick="testConnection()" style="width:100%;">
+                        <span class="icon">🔄</span> Test Backend Connection
+                    </button>
+                    <button class="action-btn" onclick="switchTab('generate')" style="width:100%;">
+                        <span class="icon">🎨</span> Go to Generate
+                    </button>
+                    <button class="action-btn" onclick="openExportPanel()" style="width:100%;">
+                        <span class="icon">⚡</span> Go to Export
+                    </button>
+                </div>
+            </div>
+        </div><!-- /panel-settings -->
+
+        <!-- ══════════════════════════════════════════════════════════
+             TAB 5: LOGS
+        ══════════════════════════════════════════════════════════ -->
+        <div class="tab-panel" id="panel-logs">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding:12px 16px; background:var(--bg-secondary); border-radius:16px; border:1px solid var(--border-color);">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span style="font-size:13px; font-weight:600; color:var(--text-primary);">📋 Live Logs</span>
+                    <span id="logCountLabel" style="font-size:10px; color:var(--text-tertiary);">0 entries</span>
+                </div>
+                <div style="display:flex; gap:8px;">
+                    <button onclick="toggleLogPause()" id="logPauseBtn" style="background:rgba(99,102,241,0.12);border:1px solid rgba(99,102,241,0.3);color:var(--accent-primary);border-radius:10px;padding:5px 12px;font-size:11px;cursor:pointer;transition:all 0.2s;">⏸ Pause</button>
+                    <button onclick="clearLogs()" style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#F87171;border-radius:10px;padding:5px 12px;font-size:11px;cursor:pointer;transition:all 0.2s;">🗑 Clear</button>
+                </div>
+            </div>
+
+            <div style="display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap;">
+                <button class="log-filter-btn active" data-level="ALL"   onclick="setLogFilter('ALL')">All</button>
+                <button class="log-filter-btn"        data-level="INFO"  onclick="setLogFilter('INFO ')">ℹ️ Info</button>
+                <button class="log-filter-btn"        data-level="OK"    onclick="setLogFilter('OK   ')">✅ OK</button>
+                <button class="log-filter-btn"        data-level="WARN"  onclick="setLogFilter('WARN ')">⚠️ Warn</button>
+                <button class="log-filter-btn"        data-level="ERROR" onclick="setLogFilter('ERROR')">❌ Error</button>
+            </div>
+
+            <div id="logFeed" style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:16px;padding:12px;font-family:'SF Mono','Monaco',monospace;font-size:11px;height:420px;overflow-y:auto;line-height:1.7;">
+                <div id="logFeedEmpty" style="color:var(--text-tertiary); text-align:center; margin-top:160px;">
+                    Logs will appear here during generation ✨
+                </div>
+            </div>
+        </div><!-- /panel-logs -->
+
+        <!-- ── FOOTER ── -->
+        <div class="footer glass-card">
+            <div class="footer-grid">
+                <div class="footer-item"><span class="dot"></span><span>Worktual AI · v2</span></div>
+                <div class="footer-item"><span class="dot"></span><span>Figma plugin</span></div>
+            </div>
+            <div class="footer-url" id="footerBackendUrl"></div>
+        </div>
+
+    </div><!-- /container -->
+
+    <script>
+    // ═══════════════════════════════════════════════════════════════
+    // CONSTANTS & STATE
+    // ═══════════════════════════════════════════════════════════════
+    const BACKEND_URL = 'http://localhost:9000';
+
+    let isProcessing        = false;
+    let selectionCount      = 0;
+    let generationStartTime = 0;
+    let totalPagesGenerated = 0;
+
+    // Analyze tab state
+    let uploadedFile       = null;
+    let uploadedFileBase64 = null;
+    let uploadedFileText   = null;
+    let selectedMode       = 'replicate';
+
+    // ── Export Panel state ──────────────────────────────────────
+    let epFrames         = [];       // [ { id, name, rawName, compType, width, height, clickableNodes } ]
+    let epProjectTitle   = 'My App';
+    let epSelectedIds    = new Set();
+    let epLinks          = [];       // [ { sourceNodeId, sourceNodeName, sourceFrameName, targetFrameName, targetFrameId } ]
+    let epPickingFor     = null;     // nodeId being linked, or null
+    let epButtonNameMap  = {};       // normalisedName → [ { nodeId, nodeName, frameName, frameId } ]
+
+    // Export runtime
+    let exportedFiles        = {};
+    let exportedAssetBytes   = {};
+    let exportProjectTitle   = 'MyApp';
+    let pendingExtractMsg    = null;
+    let assetExportExpected  = 0;
+    let assetExportReceived  = 0;
+
+    const MODE_DESCRIPTIONS = {
+        replicate: '🪞 <strong style="color:var(--text-secondary)">Replicate:</strong> Recreate the uploaded design faithfully as a Figma layout.',
+        improve:   '✨ <strong style="color:var(--text-secondary)">Improve:</strong> Analyze the design and create an enhanced, polished version.',
+        inspire:   '💡 <strong style="color:var(--text-secondary)">Inspire:</strong> Use the content as creative inspiration and generate something new.',
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // TAB SWITCHING
+    // ═══════════════════════════════════════════════════════════════
+    function switchTab(tab) {
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.getElementById('panel-' + tab).classList.add('active');
+        document.getElementById('tab-' + tab).classList.add('active');
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // MESSAGES FROM code.js
+    // ═══════════════════════════════════════════════════════════════
+    window.onmessage = function(event) {
+        const msg = event.data.pluginMessage;
+        if (!msg) return;
+
+        switch (msg.type) {
+
+            case 'init':
+                document.getElementById('backendUrl').textContent         = msg.backendUrl || BACKEND_URL;
+                document.getElementById('footerBackendUrl').textContent   = msg.backendUrl || BACKEND_URL;
+                document.getElementById('settingsBackendUrl').textContent = msg.backendUrl || BACKEND_URL;
+                updateSelectionCount(msg.selectionCount || 0);
+                document.getElementById('connectionStatus').textContent = 'Ready';
+                break;
+
+            case 'selection_update':
+                updateSelectionCount(msg.count || 0);
+                break;
+
+            case 'generate':
+                runGenerate(msg.prompt);
+                break;
+
+            case 'test':
+                runTest();
+                break;
+
+            case 'fetch_image':
+                fetchImageForPlugin(msg.src, msg.msgId);
+                break;
+
+            case 'render_done':
+                totalPagesGenerated++;
+                setStatus('✅ Page ' + msg.page_number + ' done: ' + msg.page_name);
+                break;
+
+            case 'render_error':
+                setStatus('⚠️ Render error on ' + msg.page_name + ': ' + msg.error);
+                break;
+
+            // ── Export Panel: frame scan results ──────────────────
+            case 'export_frames_ready':
+                onExportFramesReady(msg);
+                // Button name map is built on-demand when user opens the link modal
+                // (see epPickFromDropdown) so it always reflects current frame selection.
+                break;
+
+            case 'button_name_map_ready':
+                epOnButtonMapReady(msg.map || {});
+                break;
+
+            case 'export_frames_error':
+                onExportFramesError(msg.error);
+                break;
+
+            // ── Live selection from Figma canvas ──────────────────
+            // Fires every time user clicks something in Figma
+            case 'selection_detail':
+                if (document.getElementById('panel-export').classList.contains('active')) {
+                    epHandleSelectionDetail(msg.nodes || []);
+                }
+                break;
+
+            // ── Link target picked in Figma ───────────────────────
+            case 'link_target_picked':
+                epHandleLinkTargetPicked(msg);
+                break;
+
+            // ── Add-frame pick result from Figma ──────────────────
+            case 'add_frame_picked':
+                epHandleAddFramePicked(msg.frame);
+                break;
+
+            // ── Full tree extract progress ────────────────────────
+            case 'extract_start':
+                epSetProgressMsg('🔍 Scanning frames...');
+                break;
+
+            case 'extract_page_done':
+                epSetProgressMsg('📄 Extracted: ' + msg.page_name);
+                break;
+
+            case 'extract_complete':
+                pendingExtractMsg = msg;
+                epSetProgressMsg('✅ Extraction done (' + (msg.total_assets || 0) + ' assets)' +
+                    (msg.total_assets > 0 ? ' — waiting for assets...' : ''));
+                if (!msg.total_assets || msg.total_assets === 0) {
+                    runExportReact(msg.pages, msg.project_title);
+                    pendingExtractMsg = null;
+                }
+                break;
+
+            case 'extract_error':
+                epSetProgressMsg('❌ Extraction failed: ' + msg.error);
+                document.getElementById('ep-gen-btn').disabled = false;
+                pendingExtractMsg = null;
+                break;
+
+            case 'asset_export_start':
+                assetExportExpected = msg.total;
+                assetExportReceived = 0;
+                epSetProgressMsg('🖼 Exporting ' + msg.total + ' asset(s)...');
+                break;
+
+            case 'asset_exported':
+                if (msg.bytes && msg.bytes.length > 0) {
+                    exportedAssetBytes['public/assets/images/' + msg.fileName] = new Uint8Array(msg.bytes);
+                    assetExportReceived++;
+                    epSetProgressMsg('🖼 Asset ' + assetExportReceived + '/' + assetExportExpected + ': ' + msg.fileName);
+                }
+                break;
+
+            case 'asset_export_failed':
+                assetExportReceived++;
+                break;
+
+            case 'asset_export_complete':
+                epSetProgressMsg('✅ Assets ready — generating React code...');
+                if (pendingExtractMsg) {
+                    const m = pendingExtractMsg;
+                    pendingExtractMsg = null;
+                    runExportReact(m.pages, m.project_title);
+                }
+                break;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // ████  EXPORT PANEL  ████
+    // ═══════════════════════════════════════════════════════════════
+
+    function openExportPanel() {
+        switchTab('export');
+        epRescan();
+    }
+
+    function epRescan() {
+        document.getElementById('ep-loading').style.display = 'block';
+        document.getElementById('ep-content').style.display = 'none';
+        document.getElementById('ep-progress').classList.remove('visible');
+        document.getElementById('ep-result').classList.remove('visible');
+        epPickingFor = null;
+        document.getElementById('ep-picking-banner').classList.remove('visible');
+        toPlugin({ type: 'extract_export_frames' });
+    }
+
+    // ── Receive frame data ────────────────────────────────────────
+    function onExportFramesReady(msg) {
+        const allFrames    = msg.frames       || [];
+        epProjectTitle     = msg.projectTitle || 'My App';
+        const selectedIds  = new Set(msg.selectedFrameIds || []);
+        const hadSelection = msg.hadSelection;
+
+        // Only keep frames the user had selected in Figma.
+        // If nothing was selected, keep all (fallback — same as before).
+        epFrames = hadSelection
+            ? allFrames.filter(f => selectedIds.has(f.id))
+            : allFrames;
+
+        // epSelectedIds tracks what's in the export list — all visible frames are included
+        epSelectedIds = new Set(epFrames.map(f => f.id));
+
+        console.log(
+            '[EXPORT_PANEL] onExportFramesReady:',
+            allFrames.length, 'total frames on page,',
+            epFrames.length, 'shown in panel',
+            hadSelection ? '(from Figma selection)' : '(no selection — showing all)'
+        );
+
+        document.getElementById('ep-loading').style.display = 'none';
+        document.getElementById('ep-content').style.display = 'block';
+        document.getElementById('ep-project-name').textContent = epProjectTitle;
+        document.getElementById('ep-frame-count').textContent  =
+            epFrames.length + ' frame' + (epFrames.length !== 1 ? 's' : '') +
+            (hadSelection ? ' selected' : ' found');
+
+        epRenderFrameList();
+        epRenderLinks();
+    }
+
+    function onExportFramesError(error) {
+        document.getElementById('ep-loading').innerHTML =
+            '<div style="color:var(--error);font-size:12px;text-align:center;padding:32px;">' +
+            '❌ ' + escapeHtml(error) +
+            '<br><br><button onclick="epRescan()" style="background:rgba(99,102,241,0.1);border:1px solid var(--accent-primary);color:var(--accent-primary);padding:8px 18px;border-radius:10px;cursor:pointer;font-size:12px;">Try Again</button>' +
+            '</div>';
+    }
+
+    // ── Frame cards ───────────────────────────────────────────────
+    function epRenderFrameList() {
+        const list = document.getElementById('ep-frame-list');
+        list.innerHTML = '';
+        if (epFrames.length === 0) {
+            list.innerHTML = '<div style="text-align:center;color:var(--text-tertiary);font-size:12px;padding:20px;">No frames. Select frames in Figma then open Export, or use + Add Frame.</div>';
+            return;
+        }
+        epFrames.forEach(frame => {
+            const elemCount = (frame.clickableNodes || []).length;
+            const typeLabel = epFrameTypeLabel(frame.compType);
+            const typeCls   = epFrameTypeCls(frame.compType);
+
+            // Card wrapper
+            const div       = document.createElement('div');
+            div.className   = 'ep-frame-card';
+            div.dataset.fid = frame.id;
+
+            // Header row
+            const header = document.createElement('div');
+            header.className = 'ep-frame-card-header';
+            header.innerHTML =
+                '<div class="ep-frame-info">' +
+                    '<div class="ep-frame-name">' + escapeHtml(frame.name) + '</div>' +
+                    '<div class="ep-frame-meta">' + frame.width + ' \u00d7 ' + frame.height + 'px \u00b7 ' +
+                        elemCount + ' element' + (elemCount !== 1 ? 's' : '') + '</div>' +
+                '</div>' +
+                '<span class="ep-type-pill ' + typeCls + '">' + typeLabel + '</span>';
+
+            // Prompt toggle button
+            const promptBtn = document.createElement('button');
+            promptBtn.className   = 'ep-prompt-toggle';
+            promptBtn.title       = 'Add instructions for this frame';
+            promptBtn.textContent = '\u270f\ufe0f';
+            promptBtn.addEventListener('click', (e) => { e.stopPropagation(); epTogglePrompt(frame.id); });
+            header.appendChild(promptBtn);
+
+            // Remove button — removes frame from export list entirely
+            const removeBtn = document.createElement('button');
+            removeBtn.className   = 'ep-remove-btn';
+            removeBtn.title       = 'Remove from export';
+            removeBtn.textContent = '\u2715';
+            removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                epRemoveFrame(frame.id);
+            });
+            header.appendChild(removeBtn);
+
+            // Prompt body (hidden until toggled)
+            const body = document.createElement('div');
+            body.className = 'ep-frame-prompt-body';
+            body.id        = 'ep-fp-' + frame.id;
+            body.innerHTML =
+                '<div class="ep-frame-prompt-label">Instructions for this frame (optional)</div>' +
+                '<textarea class="ep-frame-prompt-ta" id="ep-fpta-' + frame.id +
+                    '" placeholder="e.g. This is the login page — email + password fields, forgot password link"></textarea>';
+
+            div.appendChild(header);
+            div.appendChild(body);
+            list.appendChild(div);
+        });
+    }
+
+    function epRemoveFrame(fid) {
+        epFrames = epFrames.filter(f => f.id !== fid);
+        epSelectedIds.delete(fid);
+        // Also remove any links that reference this frame
+        epLinks = epLinks.filter(l => l.sourceFrameName !== (epFrames.find(f=>f.id===fid)||{}).name
+            && l.targetFrameId !== fid);
+        epRenderFrameList();
+        epRenderLinks();
+        const total = epFrames.length;
+        document.getElementById('ep-frame-count').textContent =
+            total + ' frame' + (total !== 1 ? 's' : '') + ' selected';
+        console.log('[EXPORT_PANEL] Frame removed, remaining:', total);
+    }
+
+    function epTogglePrompt(fid) {
+        const body = document.getElementById('ep-fp-' + fid);
+        if (body) body.classList.toggle('open');
+    }
+
+    function epFrameTypeLabel(ct) {
+        if (!ct || ct === 'page') return 'Page';
+        if (ct === 'modal' || ct === 'dialog') return 'Modal';
+        if (ct === 'drawer') return 'Drawer';
+        if (ct === 'sidebar') return 'Sidebar';
+        if (ct === 'navbar' || ct === 'header') return 'Nav';
+        if (ct === 'footer') return 'Footer';
+        return ct.charAt(0).toUpperCase() + ct.slice(1);
+    }
+    function epFrameTypeCls(ct) {
+        if (!ct || ct === 'page') return 'ep-type-page';
+        if (ct === 'modal' || ct === 'dialog' || ct === 'drawer') return 'ep-type-modal';
+        if (ct === 'sidebar' || ct === 'navbar' || ct === 'footer') return 'ep-type-sidebar';
+        return 'ep-type-other';
+    }
+
+    // ── Link rows ─────────────────────────────────────────────────
+    function epRenderLinks() {
+        const listEl = document.getElementById('ep-links-list');
+        if (epLinks.length === 0) {
+            listEl.innerHTML =
+                '<div class="ep-linker-empty">' +
+                'Select any element in Figma while this panel is open.<br>' +
+                'Elements inside included frames appear here to link.' +
+                '</div>';
+            return;
+        }
+        listEl.innerHTML = '';
+        epLinks.forEach((link, idx) => {
+            const row = document.createElement('div');
+            row.className = 'ep-link-row';
+            row.innerHTML =
+                '<div class="ep-link-row-source">' +
+                    '<div class="ep-link-row-source-name">' + escapeHtml(link.sourceNodeName) + '</div>' +
+                    '<div class="ep-link-row-source-frame">in: ' + escapeHtml(link.sourceFrameName) + '</div>' +
+                '</div>' +
+                '<span class="ep-link-arrow">→</span>' +
+                '<div class="ep-link-row-target">' +
+                    '<div class="ep-link-row-target-name">' + escapeHtml(link.targetFrameName) + '</div>' +
+                '</div>' +
+                '<button class="ep-link-remove" onclick="epRemoveLink(' + idx + ')">✕</button>';
+            listEl.appendChild(row);
+        });
+    }
+
+    function epRemoveLink(idx) {
+        epLinks.splice(idx, 1);
+        epRenderLinks();
+    }
+
+    // ── Element inspector ─────────────────────────────────────────
+    // Fires when user selects something in Figma canvas
+    function epHandleSelectionDetail(nodes) {
+        // Only show nodes whose parent frame is in our export set
+        const relevant = nodes.filter(n =>
+            n.parentFrameId && epFrames.some(f => f.id === n.parentFrameId)
+        );
+
+        const inspector = document.getElementById('ep-inspector');
+        const nodesEl   = document.getElementById('ep-inspector-nodes');
+
+        if (relevant.length === 0) {
+            inspector.classList.remove('visible');
+            return;
+        }
+
+        inspector.classList.add('visible');
+        nodesEl.innerHTML = '';
+
+        relevant.forEach(n => {
+            const icon = n.nodeType === 'INSTANCE' ? '\uD83E\uDDE9' :
+                         n.nodeType === 'FRAME'    ? '\u25a2' :
+                         n.nodeType === 'TEXT'     ? 'T' : '\u25c7';
+            const existingLink = epLinks.find(l => l.sourceNodeId === n.nodeId);
+            const isPicking    = epPickingFor === n.nodeId;
+            const btnTxt       = isPicking ? '\uD83C\uDFAF Picking\u2026' : (existingLink ? '\u2197 ' + existingLink.targetFrameName : 'Link');
+            const pickingCls   = isPicking ? ' ep-picking' : '';
+
+            // Node info row
+            const nodeDiv = document.createElement('div');
+            nodeDiv.className = 'ep-inspector-node';
+
+            const iconEl = document.createElement('span');
+            iconEl.className   = 'ep-node-icon';
+            iconEl.textContent = icon;
+
+            const infoEl = document.createElement('div');
+            infoEl.className = 'ep-node-info';
+            infoEl.innerHTML =
+                '<div class="ep-node-name">' + escapeHtml(n.nodeName) + '</div>' +
+                '<div class="ep-node-parent">in: ' + escapeHtml(n.parentFrameName || '?') + '</div>';
+
+            const linkBtn = document.createElement('button');
+            linkBtn.className   = 'ep-link-btn' + pickingCls;
+            linkBtn.textContent = btnTxt;
+            linkBtn.dataset.nodeId    = n.nodeId;
+            linkBtn.dataset.nodeName  = n.nodeName;
+            linkBtn.dataset.frameName = n.parentFrameName || '';
+            linkBtn.addEventListener('click', () =>
+                epStartPick(n.nodeId, n.nodeName, n.parentFrameName || '')
+            );
+
+            nodeDiv.appendChild(iconEl);
+            nodeDiv.appendChild(infoEl);
+            nodeDiv.appendChild(linkBtn);
+            nodesEl.appendChild(nodeDiv);
+
+            // Dropdown picker row — lets user pick target from plugin without clicking canvas
+            const pickerDiv = document.createElement('div');
+            pickerDiv.style.cssText = 'display:flex;align-items:center;gap:7px;padding:4px 0 6px;border-bottom:1px solid rgba(255,255,255,0.04);';
+
+            const pickLabel = document.createElement('span');
+            pickLabel.style.cssText    = 'font-size:10px;color:var(--text-tertiary);white-space:nowrap;';
+            pickLabel.textContent      = '\u2192 links to:';
+
+            const sel = document.createElement('select');
+            sel.style.cssText = 'flex:1;background:var(--bg-tertiary);border:1px solid var(--border-color);color:var(--text-secondary);padding:5px 8px;border-radius:8px;font-size:11px;cursor:pointer;';
+
+            const defaultOpt   = document.createElement('option');
+            defaultOpt.value   = '';
+            defaultOpt.textContent = '\u2014 pick in Figma OR select below \u2014';
+            sel.appendChild(defaultOpt);
+
+            epFrames.forEach(f => {
+                const opt = document.createElement('option');
+                opt.value       = f.id + '|' + f.name;
+                opt.textContent = f.name;
+                sel.appendChild(opt);
+            });
+
+            // Pre-select existing link if any
+            if (existingLink) {
+                sel.value = existingLink.targetFrameId + '|' + existingLink.targetFrameName;
+            }
+
+            sel.addEventListener('change', () =>
+                epPickFromDropdown(n.nodeId, n.nodeName, n.parentFrameName || '', sel.value)
+            );
+
+            pickerDiv.appendChild(pickLabel);
+            pickerDiv.appendChild(sel);
+            nodesEl.appendChild(pickerDiv);
+        });
+    }
+
+    // User picked link target from plugin dropdown → show bulk modal
+    function epPickFromDropdown(nodeId, nodeName, sourceFrameName, value) {
+        if (!value) return;
+        const parts           = value.split('|');
+        const targetFrameId   = parts[0];
+        const targetFrameName = parts[1] || parts[0];
+
+        // Store pending link info
+        window._epBulkPending = { nodeId, nodeName, sourceFrameName, targetFrameId, targetFrameName };
+
+        // Show modal immediately with a loading state while map is refreshed
+        document.getElementById('ep-bulk-btn-name').textContent = nodeName;
+        document.getElementById('ep-bulk-unique-chk').checked   = true;
+        document.getElementById('ep-bulk-matches-section').style.display = 'none';
+        document.getElementById('ep-bulk-list').innerHTML =
+            '<div style="font-size:11px;color:var(--text-tertiary);padding:8px 0;">Scanning buttons…</div>';
+        document.getElementById('ep-bulk-backdrop').classList.add('visible');
+
+        // Request a FRESH button map using the current live epFrames list.
+        // This covers all Figma pages and reflects any frames added/removed
+        // after the initial panel scan.
+        window._epBulkWaitingMap = true;
+        toPlugin({
+            type:     'build_button_name_map',
+            frameIds: epFrames.map(f => f.id),
+        });
+    }
+
+    // Called when button_name_map_ready message arrives.
+    // If the bulk modal is waiting for a fresh scan, populate it now.
+    function epOnButtonMapReady(map) {
+        epButtonNameMap = map;
+        console.log('[EP] Button name map ready —', Object.keys(epButtonNameMap).length, 'unique names');
+
+        if (!window._epBulkWaitingMap) return;
+        window._epBulkWaitingMap = false;
+
+        const p = window._epBulkPending;
+        if (!p) return;
+
+        const norm    = p.nodeName.toLowerCase().replace(/\s+/g, ' ').trim();
+        const matches = (epButtonNameMap[norm] || []).filter(m => m.nodeId !== p.nodeId);
+
+        const list = document.getElementById('ep-bulk-list');
+        list.innerHTML = '';
+
+        if (matches.length === 0) {
+            list.innerHTML = '<div style="font-size:11px;color:var(--text-tertiary);padding:8px 0;">No other buttons with this name found.</div>';
+        }
+
+        matches.forEach(m => {
+            const item = document.createElement('div');
+            item.className      = 'ep-bulk-item';
+            item.dataset.nodeId = m.nodeId;
+            item.innerHTML =
+                '<input type="checkbox" checked>' +
+                '<div class="ep-bulk-item-info">' +
+                  '<div class="ep-bulk-item-name">' + escapeHtml(m.nodeName) + '</div>' +
+                  '<div class="ep-bulk-item-page">in: ' + escapeHtml(m.frameName) +
+                    (m.pageName ? ' · ' + escapeHtml(m.pageName) : '') + '</div>' +
+                '</div>';
+
+            item.addEventListener('mouseenter', () => toPlugin({ type: 'highlight_node',   nodeId: m.nodeId }));
+            item.addEventListener('mouseleave', () => toPlugin({ type: 'unhighlight_node', nodeId: m.nodeId }));
+            list.appendChild(item);
+        });
+
+        window._epBulkMatches = matches;
+    }
+
+    function epBulkToggleUnique(isUnique) {
+        document.getElementById('ep-bulk-matches-section').style.display = isUnique ? 'none' : 'flex';
+    }
+
+    function epBulkCancel() {
+        // Unhighlight anything that might still be highlighted
+        (window._epBulkMatches || []).forEach(m =>
+            toPlugin({ type: 'unhighlight_node', nodeId: m.nodeId })
+        );
+        document.getElementById('ep-bulk-backdrop').classList.remove('visible');
+        window._epBulkPending = null;
+        window._epBulkMatches = [];
+    }
+
+    function epBulkConfirm() {
+        const p = window._epBulkPending;
+        if (!p) return;
+
+        const isUnique = document.getElementById('ep-bulk-unique-chk').checked;
+
+        // Always apply to the original node
+        epLinks = epLinks.filter(l => l.sourceNodeId !== p.nodeId);
+        epLinks.push({
+            sourceNodeId:    p.nodeId,
+            sourceNodeName:  p.nodeName,
+            sourceFrameName: p.sourceFrameName,
+            targetFrameName: p.targetFrameName,
+            targetFrameId:   p.targetFrameId,
+        });
+
+        // If not unique → also apply to every checked match
+        if (!isUnique) {
+            const items = document.querySelectorAll('#ep-bulk-list .ep-bulk-item');
+            items.forEach((item, i) => {
+                const chk = item.querySelector('input[type=checkbox]');
+                if (!chk || !chk.checked) return;
+                const m = (window._epBulkMatches || [])[i];
+                if (!m) return;
+                epLinks = epLinks.filter(l => l.sourceNodeId !== m.nodeId);
+                epLinks.push({
+                    sourceNodeId:    m.nodeId,
+                    sourceNodeName:  m.nodeName,
+                    sourceFrameName: m.frameName,
+                    targetFrameName: p.targetFrameName,
+                    targetFrameId:   p.targetFrameId,
+                });
+            });
+        }
+
+        // Unhighlight all matches
+        (window._epBulkMatches || []).forEach(m =>
+            toPlugin({ type: 'unhighlight_node', nodeId: m.nodeId })
+        );
+
+        document.getElementById('ep-bulk-backdrop').classList.remove('visible');
+        epRenderLinks();
+        document.getElementById('ep-inspector').classList.remove('visible');
+        window._epBulkPending = null;
+        window._epBulkMatches = [];
+    }
+
+    // ── Link picking (click in Figma canvas) ─────────────────────
+    function epStartPick(nodeId, nodeName, sourceFrameName) {
+        epPickingFor = nodeId;
+        document.getElementById('ep-picking-banner').classList.add('visible');
+
+        // Refresh "Link" button to show picking state
+        document.querySelectorAll('.ep-link-btn').forEach(b => {
+            if (b.dataset.nodeId === nodeId) {
+                b.classList.add('ep-picking');
+                b.textContent = '🎯 Picking…';
+            }
+        });
+        toPlugin({ type: 'start_link_picking', sourceNodeId: nodeId });
+
+        // Store source info so we can use it when target arrives
+        window._epPickSource = { nodeId, nodeName, sourceFrameName };
+    }
+
+    function epCancelPick() {
+        epPickingFor = null;
+        document.getElementById('ep-picking-banner').classList.remove('visible');
+        // Restore button states
+        document.querySelectorAll('.ep-link-btn.ep-picking').forEach(b => {
+            b.classList.remove('ep-picking');
+            b.textContent = 'Link';
+        });
+        toPlugin({ type: 'cancel_link_picking' });
+    }
+
+    // ── Add-frame picking ─────────────────────────────────────────
+    // User clicks "+ Frame" button → enters picking mode.
+    // Next frame click in Figma canvas is caught by code.js and returned
+    // as add_frame_picked. We then add it to epFrames if not already there.
+
+    function epStartAddFramePick() {
+        console.log('[EXPORT_PANEL] Starting add-frame-pick mode');
+        document.getElementById('ep-add-frame-banner').style.display = 'flex';
+        document.getElementById('ep-add-frame-btn').disabled = true;
+        toPlugin({ type: 'start_add_frame_picking' });
+    }
+
+    function epCancelAddFramePick() {
+        console.log('[EXPORT_PANEL] Cancelled add-frame-pick mode');
+        document.getElementById('ep-add-frame-banner').style.display = 'none';
+        document.getElementById('ep-add-frame-btn').disabled = false;
+        toPlugin({ type: 'cancel_add_frame_picking' });
+    }
+
+    function epHandleAddFramePicked(frame) {
+        document.getElementById('ep-add-frame-banner').style.display = 'none';
+        document.getElementById('ep-add-frame-btn').disabled = false;
+
+        if (!frame) {
+            console.warn('[EXPORT_PANEL] add_frame_picked: no frame data');
+            return;
+        }
+
+        // Check if already in the list
+        const exists = epFrames.some(f => f.id === frame.id);
+        if (exists) {
+            // Already present — just make sure it's selected
+            epSelectedIds.add(frame.id);
+            epRenderFrameList();
+            console.log('[EXPORT_PANEL] Frame already in list, selected:', frame.name);
+            return;
+        }
+
+        // Add to list and select it
+        epFrames.push(frame);
+        epSelectedIds.add(frame.id);
+
+        // Update the frame count text
+        const total = epFrames.length;
+        document.getElementById('ep-frame-count').textContent =
+            total + ' frame' + (total !== 1 ? 's' : '') + ' selected';
+
+        epRenderFrameList();
+        epRenderLinks();
+
+        console.log('[EXPORT_PANEL] Added frame:', frame.name, '| Total frames now:', total);
+
+        // Flash the newly added card briefly so user sees it was added
+        setTimeout(() => {
+            const card = document.querySelector('.ep-frame-card[data-fid="' + frame.id + '"]');
+            if (card) {
+                card.style.transition = 'box-shadow 0.4s';
+                card.style.boxShadow  = '0 0 0 2px var(--accent-primary), 0 0 12px var(--accent-glow)';
+                setTimeout(() => { card.style.boxShadow = ''; }, 1200);
+            }
+        }, 50);
+    }
+
+    // Receive picked target from code.js (user clicked in Figma)
+    function epHandleLinkTargetPicked(msg) {
+        document.getElementById('ep-picking-banner').classList.remove('visible');
+        epPickingFor = null;
+
+        const src = window._epPickSource || {};
+        window._epPickSource = null;
+
+        // Route through bulk modal instead of linking directly
+        const nodeId         = msg.sourceNodeId;
+        const nodeName       = src.nodeName       || msg.sourceNodeId;
+        const sourceFrameName = src.sourceFrameName || '';
+        const targetFrameId   = msg.targetFrameId;
+        const targetFrameName = msg.targetFrameName;
+
+        // Reuse epPickFromDropdown — it handles the modal + bulk logic
+        epPickFromDropdown(nodeId, nodeName, sourceFrameName,
+            targetFrameId + '|' + targetFrameName);
+    }
+
+    // ── Generate ──────────────────────────────────────────────
+    function epGenerate() {
+        if (epFrames.length === 0) {
+            showMessage('⚠️ No frames to export. Select frames in Figma then open Export, or use + Add Frame.', 'warning');
+            return;
+        }
+        document.getElementById('ep-gen-btn').disabled = true;
+        document.getElementById('ep-progress').classList.add('visible');
+        document.getElementById('ep-result').classList.remove('visible');
+        document.getElementById('ep-log-feed').innerHTML = '';
+        document.getElementById('ep-progress-bar').style.width = '3%';
+        document.getElementById('ep-progress-frac').textContent = '';
+        epSetProgressMsg('🔍 Reading ' + epFrames.length + ' frame(s) from Figma...');
+
+        exportedFiles       = {};
+        exportedAssetBytes  = {};
+        pendingExtractMsg   = null;
+        assetExportExpected = 0;
+        assetExportReceived = 0;
+        exportProjectTitle  = epProjectTitle;
+
+        // Collect per-frame prompts
+        const framePrompts = {};
+        epFrames.forEach(f => {
+            const el = document.getElementById('ep-fpta-' + f.id);
+            if (el && el.value.trim()) framePrompts[f.name] = el.value.trim();
+        });
+        window._exportPanelContext = {
+            framePrompts,
+            globalPrompt: document.getElementById('ep-global-prompt').value.trim(),
+            buttonLinks:  epLinks.slice(),
+        };
+
+        console.log(
+            '[EXPORT_PANEL] Generating:', epFrames.length, 'frames,',
+            Object.keys(framePrompts).length, 'frame prompts,',
+            epLinks.length, 'explicit links'
+        );
+
+        // Send exact frame IDs — all frames in the panel are included
+        toPlugin({
+            type:         'extract_frames_by_ids',
+            frameIds:     epFrames.map(f => f.id),
+            projectTitle: epProjectTitle,
+        });
+    }
+
+    // Helper to update progress message + log feed
+    function epSetProgressMsg(msg) {
+        const el = document.getElementById('ep-progress-msg');
+        if (el) el.textContent = msg;
+    }
+
+    // TEST CONNECTION
+    // ═══════════════════════════════════════════════════════════════
+    async function runTest() {
+        setStatus('🔄 Testing connection...');
+        setProcessing(true);
+        try {
+            const res  = await fetch(BACKEND_URL + '/');
+            const data = await res.json();
+            document.getElementById('connectionStatus').textContent = 'Connected';
+            document.getElementById('status').innerHTML = formatJSON(data);
+            showMessage('✅ Backend connected', 'success');
+            toPlugin({ type: 'test_result', success: true, data });
+        } catch (e) {
+            document.getElementById('connectionStatus').textContent = 'Offline';
+            setStatus('❌ Connection failed: ' + e.message);
+            showMessage('❌ Connection error', 'error');
+            toPlugin({ type: 'test_result', success: false, message: String(e) });
+        } finally {
+            setProcessing(false);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // MAIN GENERATE
+    // ═══════════════════════════════════════════════════════════════
+    async function runGenerate(prompt) {
+        if (!prompt) { showMessage('Please enter a prompt', 'warning'); return; }
+        if (isProcessing) return;
+
+        setProcessing(true);
+        generationStartTime   = Date.now();
+        totalPagesGenerated   = 0;
+        setStatus('🔄 Connecting to AI...');
+
+        try {
+            const response = await fetch(BACKEND_URL + '/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt })
+            });
+
+            if (!response.ok) throw new Error('Backend error: ' + response.status);
+
+            const reader  = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const result = await reader.read();
+                if (result.done) break;
+
+                buffer += decoder.decode(result.value, { stream: true });
+                const parts = buffer.split('\n\n');
+                buffer = parts.pop();
+
+                for (let i = 0; i < parts.length; i++) {
+                    const block = parts[i].trim();
+                    if (!block) continue;
+                    const dataLines = block.split('\n')
+                        .filter(l => l.startsWith('data: '))
+                        .map(l => l.slice(6));
+                    if (!dataLines.length) continue;
+                    let event;
+                    try { event = JSON.parse(dataLines.join('\n')); } catch (e) { continue; }
+                    await handleSSEEvent(event);
+                }
+            }
+
+            const elapsed = ((Date.now() - generationStartTime) / 1000).toFixed(1);
+            setStatus('✨ Done! ' + totalPagesGenerated + ' pages in ' + elapsed + 's. Check canvas.');
+            showMessage('✨ Design created! Check canvas.', 'success');
+
+            const sg = document.getElementById('statsGrid');
+            sg.style.display = 'grid';
+            document.getElementById('genTime').textContent     = elapsed + 's';
+            document.getElementById('modelUsed').textContent   = 'Gemini';
+            document.getElementById('elementCount').textContent = totalPagesGenerated + ' pages';
+
+        } catch (err) {
+            setStatus('❌ Error: ' + err.message);
+            showMessage('❌ Generation failed', 'error');
+            toPlugin({ type: 'error', message: String(err) });
+        } finally {
+            setProcessing(false);
+        }
+    }
+
+    // ── SSE handler ──────────────────────────────────────────────
+    async function handleSSEEvent(event) {
+        const type    = event.type;
+        const payload = event.payload || {};
+
+        switch (type) {
+            case 'status':
+                setStatus(payload.message || '');
+                toPlugin({ type: 'status', message: payload.message });
+                break;
+            case 'plan_ready':
+                setStatus('📋 Plan: ' + payload.total_pages + ' pages — ' + payload.project_title);
+                break;
+            case 'page_start':
+                setStatus('📦 Receiving page ' + payload.page_number + '/' + payload.total_pages + ': ' + payload.page_name + '...');
+                toPlugin({
+                    type: 'page_start',
+                    page_id: payload.page_id, page_name: payload.page_name,
+                    project_title: payload.project_title,
+                    page_number: payload.page_number, total_pages: payload.total_pages,
+                    frame_meta: payload.frame_meta, total_children: payload.total_children,
+                    total_chunks: payload.total_chunks, theme: payload.theme,
+                    flow_meta: payload.flow_meta,
+                });
+                break;
+            case 'page_chunk':
+                toPlugin({
+                    type: 'page_chunk',
+                    page_id: payload.page_id, chunk_index: payload.chunk_index,
+                    total_chunks: payload.total_chunks, children: payload.children,
+                });
+                break;
+            case 'page_end':
+                setStatus('🎨 Rendering page ' + payload.page_number + '/' + payload.total_pages + ': ' + payload.page_name + '...');
+                toPlugin({
+                    type: 'page_end',
+                    page_id: payload.page_id, page_name: payload.page_name,
+                    page_number: payload.page_number, total_pages: payload.total_pages,
+                });
+                break;
+            case 'page_error':
+                setStatus('⚠️ Page ' + payload.page_number + ' error: ' + payload.error);
+                break;
+            case 'complete':
+                setStatus(payload.message || 'All pages generated!');
+                toPlugin({ type: 'complete', message: payload.message, total_pages: payload.total_pages });
+                break;
+            case 'error':
+                setStatus('❌ ' + payload.message);
+                toPlugin({ type: 'error', message: payload.message });
+                break;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // IMAGE PROXY
+    // ═══════════════════════════════════════════════════════════════
+    async function fetchImageForPlugin(src, msgId) {
+        try {
+            const res   = await fetch(src);
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const buf   = await res.arrayBuffer();
+            const bytes = Array.from(new Uint8Array(buf));
+            toPlugin({ type: 'image_data', msgId, bytes });
+        } catch (e) {
+            toPlugin({ type: 'image_data', msgId, bytes: null, error: e.message });
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ████  ANALYZE TAB LOGIC  ████
+    // ═══════════════════════════════════════════════════════════════
+
+    let fileQueue    = [];
+    let batchRunning = false;
+
+    function handleDragOver(e)  { e.preventDefault(); document.getElementById('dropZone').classList.add('drag-over'); }
+    function handleDragLeave(e) { document.getElementById('dropZone').classList.remove('drag-over'); }
+    function handleDrop(e)      { e.preventDefault(); document.getElementById('dropZone').classList.remove('drag-over'); addFilesToQueue(Array.from(e.dataTransfer.files)); }
+    function handleFileSelect(e){ addFilesToQueue(Array.from(e.target.files)); e.target.value = ''; }
+
+    function addFilesToQueue(files) {
+        const allowedExt = ['.pdf','.txt','.md','.csv','.doc','.docx'];
+        files.forEach(file => {
+            const ok = file.type.startsWith('image/') ||
+                       file.type === 'application/pdf' ||
+                       file.type.startsWith('text/') ||
+                       allowedExt.some(e => file.name.toLowerCase().endsWith(e));
+            if (!ok) return;
+            if (fileQueue.find(q => q.file.name === file.name && q.file.size === file.size)) return;
+
+            const id    = 'fq_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+            const entry = { id, file, base64: null, text: null, thumb: null, status: 'pending' };
+            fileQueue.push(entry);
+
+            if (file.type.startsWith('image/') || file.type === 'application/pdf') {
+                const reader = new FileReader();
+                reader.onload = ev => { entry.base64 = ev.target.result; entry.thumb = file.type.startsWith('image/') ? ev.target.result : null; renderQueueGrid(); };
+                reader.readAsDataURL(file);
+            } else {
+                const reader = new FileReader();
+                reader.onload = ev => { entry.text = ev.target.result; renderQueueGrid(); };
+                reader.readAsText(file);
+            }
+        });
+        renderQueueGrid();
+        updateAnalyzeBtn();
+    }
+
+    function renderQueueGrid() {
+        const grid = document.getElementById('fileQueueGrid');
+        if (fileQueue.length === 0) { grid.innerHTML = ''; return; }
+
+        grid.innerHTML = fileQueue.map(entry => {
+            const icon  = entry.file.type.startsWith('image/') ? '🖼️' : entry.file.type === 'application/pdf' ? '📄' : '📝';
+            const kb    = Math.round(entry.file.size / 1024);
+            const stMap = { pending:'⏳', processing:'⚙️', done:'✅', error:'❌' };
+            return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg-primary);border-radius:12px;border:1px solid var(--border-color);margin-bottom:6px;">
+                <span style="font-size:18px;">${icon}</span>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:11px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(entry.file.name)}</div>
+                    <div style="font-size:10px;color:var(--text-tertiary);">${kb} KB</div>
+                </div>
+                <span style="font-size:14px;" title="${entry.status}">${stMap[entry.status] || '⏳'}</span>
+                <button onclick="removeFromQueue('${entry.id}')" style="background:rgba(239,68,68,0.1);border:none;color:#F87171;border-radius:7px;padding:3px 8px;font-size:10px;cursor:pointer;">✕</button>
+            </div>`;
+        }).join('');
+    }
+
+    function removeFromQueue(id) {
+        fileQueue = fileQueue.filter(e => e.id !== id);
+        renderQueueGrid();
+        updateAnalyzeBtn();
+    }
+
+    function updateAnalyzeBtn() {
+        const btn   = document.getElementById('analyzeBtn');
+        const label = document.getElementById('analyzeBtnLabel');
+        const n     = fileQueue.filter(e => e.status === 'pending').length;
+        if (n === 0) {
+            label.textContent = 'Analyze & Generate Designs';
+            btn.disabled = batchRunning;
+        } else {
+            label.textContent = `Analyze ${n} File${n > 1 ? 's' : ''} & Generate`;
+            btn.disabled = batchRunning;
+        }
+    }
+
+    function setMode(mode) {
+        selectedMode = mode;
+        document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('selected'));
+        document.getElementById('mode-' + mode).classList.add('selected');
+        document.getElementById('modeDescription').innerHTML = MODE_DESCRIPTIONS[mode];
+    }
+
+    function appendInstruction(text) {
+        const ta = document.getElementById('analyzeInstruction');
+        ta.value = ta.value ? ta.value + ', ' + text : text;
+    }
+
+    // Batch row helpers
+    function initBatchProgress(total) {
+        document.getElementById('batchProgressWrap').style.display = 'block';
+        document.getElementById('batchFileRows').innerHTML = '';
+        fileQueue.forEach(entry => {
+            const row = document.createElement('div');
+            row.id = 'brow_' + entry.id;
+            row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.04);';
+            row.innerHTML = `<span id="brow_icon_${entry.id}" style="font-size:16px;">⏳</span>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:11px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(entry.file.name)}</div>
+                    <div id="brow_status_${entry.id}" style="font-size:10px;color:var(--text-tertiary);">Waiting...</div>
+                </div>`;
+            document.getElementById('batchFileRows').appendChild(row);
+        });
+    }
+
+    function setBatchRowStatus(id, state, msg) {
+        const row    = document.getElementById('brow_' + id);
+        const iconEl = document.getElementById('brow_icon_' + id);
+        const statEl = document.getElementById('brow_status_' + id);
+        if (!row) return;
+        const iconMap = { processing:'⚙️', done:'✅', error:'❌' };
+        if (state === 'processing') row.style.background = 'rgba(99,102,241,0.06)';
+        else if (state === 'done')  row.style.background = 'rgba(16,185,129,0.05)';
+        else if (state === 'error') row.style.background = 'rgba(239,68,68,0.05)';
+        if (statEl && msg) { statEl.textContent = msg; statEl.style.color = state === 'error' ? 'var(--error)' : state === 'done' ? 'var(--success)' : 'var(--text-tertiary)'; }
+        if (iconEl) iconEl.innerHTML = iconMap[state] || '⏳';
+        row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function updateBatchProgress(done, total) {
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        document.getElementById('batchProgressBar').style.width = pct + '%';
+        document.getElementById('batchOverallLabel').textContent = done + ' / ' + total;
+    }
+
+    async function runBatchAnalyze() {
+        if (fileQueue.length === 0) { showAnalyzeMessage('⚠️ Please add at least one file.', 'warning'); return; }
+        if (batchRunning) return;
+
+        const instruction = document.getElementById('analyzeInstruction').value.trim();
+        const btn         = document.getElementById('analyzeBtn');
+        batchRunning = true; btn.disabled = true;
+
+        // Wait for all files to finish reading
+        for (let attempts = 0; attempts < 40; attempts++) {
+            const allReady = fileQueue.every(e => e.base64 !== null || e.text !== null);
+            if (allReady) break;
+            await new Promise(r => setTimeout(r, 250));
+        }
+
+        fileQueue.forEach(e => { e.status = 'pending'; });
+        renderQueueGrid();
+        initBatchProgress(fileQueue.length);
+
+        document.getElementById('batchCurrentLabel').textContent = `🧠 Building unified context from ${fileQueue.length} file(s)...`;
+
+        try {
+            // ── Build the unified context from ALL files at once ──────
+            const filesPayload = fileQueue.map(entry => {
+                const fe = { filename: entry.file.name, file_type: entry.file.type };
+                if (entry.base64) { fe.file_base64 = entry.base64.split(',')[1]; fe.media_type = entry.file.type; }
+                if (entry.text)   { fe.file_text = entry.text; }
+                return fe;
+            });
+
+            fileQueue.forEach(e => { e.status = 'processing'; setBatchRowStatus(e.id, 'processing', '🔍 Analyzing...'); });
+            renderQueueGrid();
+
+            const ctxRes = await fetch(BACKEND_URL + '/analyze-context', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ files: filesPayload, mode: selectedMode, instruction })
+            });
+
+            if (!ctxRes.ok) {
+                const errText = await ctxRes.text();
+                throw new Error('Context build failed: ' + errText.slice(0, 120));
+            }
+
+            const ctxData = await ctxRes.json();
+            const unifiedPrompt = ctxData.unified_prompt || '';
+            const fileRoles     = ctxData.file_roles     || {};
+
+            // Update row statuses to show role
+            fileQueue.forEach(e => {
+                const role = fileRoles[e.file.name] || 'content';
+                setBatchRowStatus(e.id, 'processing',
+                    role === 'layout' ? '🎨 Layout authority — generating...' : '📄 Content authority — generating...');
+            });
+            updateBatchProgress(0, 1);
+
+            document.getElementById('batchCurrentLabel').textContent = `🎨 Generating design from unified context...`;
+
+            // ── Generate design from unified prompt ───────────────────
+            const genRes = await fetch(BACKEND_URL + '/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    prompt:                unifiedPrompt,
+                    layout_context:        ctxData.layout_context        || null,
+                    content_context:       ctxData.content_context       || null,
+                    screenshot_base64:     ctxData.screenshot_base64     || null,
+                    screenshot_media_type: ctxData.screenshot_media_type || 'image/png',
+                })
+            });
+            if (!genRes.ok) throw new Error('Generation failed: ' + genRes.status);
+
+            const reader  = genRes.body.getReader();
+            const decoder = new TextDecoder();
+            let   buf     = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buf += decoder.decode(value, { stream: true });
+                const parts = buf.split('\n\n'); buf = parts.pop();
+                for (const block of parts) {
+                    const trimmed = block.trim(); if (!trimmed) continue;
+                    const dataLines = trimmed.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6));
+                    if (!dataLines.length) continue;
+                    let ev; try { ev = JSON.parse(dataLines.join('\n')); } catch { continue; }
+                    await handleSSEEvent(ev);
+                }
+            }
+
+            fileQueue.forEach(e => { e.status = 'done'; setBatchRowStatus(e.id, 'done', '✅ Design created on canvas'); });
+            renderQueueGrid();
+            updateBatchProgress(1, 1);
+
+            document.getElementById('batchCurrentLabel').textContent = `✅ Complete — unified design generated from ${fileQueue.length} file(s)`;
+            showAnalyzeMessage(`✅ Design generated from ${fileQueue.length} file(s) combined!`, 'success');
+            setTimeout(() => switchTab('generate'), 1800);
+
+        } catch (err) {
+            fileQueue.forEach(e => { if (e.status !== 'done') { e.status = 'error'; setBatchRowStatus(e.id, 'error', '❌ ' + err.message.slice(0, 60)); } });
+            renderQueueGrid();
+            document.getElementById('batchCurrentLabel').textContent = `❌ Failed: ${err.message.slice(0, 80)}`;
+            showAnalyzeMessage('❌ ' + err.message.slice(0, 100), 'error');
+        }
+
+        batchRunning = false; btn.disabled = false; updateAnalyzeBtn();
+    }
+    
+    function showAnalyzeMessage(text, type) {
+        const box = document.getElementById('analyzeMessageBox');
+        box.className = 'message-box ' + type; box.textContent = text; box.style.display = 'block';
+        setTimeout(() => { box.style.display = 'none'; }, 5000);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // GENERATE TAB HELPERS
+    // ═══════════════════════════════════════════════════════════════
+    function generateDesign() {
+        const prompt = document.getElementById('promptInput').value.trim();
+        if (!prompt) { showMessage('Please enter a prompt', 'warning'); return; }
+        if (isProcessing) return;
+        runGenerate(prompt);
+    }
+
+    function testConnection() { runTest(); }
+    function setExample(text) { document.getElementById('promptInput').value = text; }
+    function clearPrompt()    { document.getElementById('promptInput').value = ''; }
+
+    function copyPrompt() {
+        const prompt = document.getElementById('promptInput').value;
+        if (!prompt) return;
+        navigator.clipboard.writeText(prompt).then(() => {
+            const btn = document.getElementById('copyBtn');
+            const orig = btn.innerHTML;
+            btn.innerHTML = '<span class="icon">✅</span> Copied!';
+            setTimeout(() => { btn.innerHTML = orig; }, 2000);
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // REACT EXPORT RUNNER  (called after extract_complete)
+    // ═══════════════════════════════════════════════════════════════
+    async function runExportReact(pages, projectTitle) {
+        // Inject button links & per-frame prompts from panel context
+        const ctx = window._exportPanelContext || {};
+        if (ctx.framePrompts || ctx.buttonLinks) {
+            pages = injectPanelContext(pages, ctx);
+        }
+
+        const logFeed = document.getElementById('ep-log-feed');
+
+        function appendLog(entry) {
+            pushLogEntry(entry);
+            const row = document.createElement('div');
+            row.style.cssText = 'padding:1px 0;border-bottom:1px solid rgba(255,255,255,0.03);';
+            const lvl = (entry.level || '').trim().toUpperCase();
+            const col = lvl==='OK'?'#34D399':lvl==='ERROR'?'#F87171':lvl==='WARN'?'#FBBF24':'#9CA3AF';
+            const tag = (entry.tag || '').padEnd(10).slice(0,10);
+            row.innerHTML =
+                '<span style="color:#4B5563;">' + escapeHtml(entry.ts||'') + '</span> ' +
+                '<span style="color:'+col+';font-weight:700;">' + escapeHtml((entry.level||'').trim()) + '</span> ' +
+                '<span style="color:#818CF8;">' + escapeHtml(tag) + '</span> ' +
+                '<span style="color:#D1D5DB;">' + escapeHtml(entry.message||'') + '</span>';
+            logFeed.appendChild(row);
+            logFeed.scrollTop = logFeed.scrollHeight;
+        }
+
+        function setProgress(n, total, label) {
+            const pct = total > 0 ? Math.round((n/total)*100) : 0;
+            document.getElementById('ep-progress-bar').style.width  = pct + '%';
+            document.getElementById('ep-progress-frac').textContent = n + ' / ' + total;
+            epSetProgressMsg(label || '');
+        }
+
+        try {
+            const res = await fetch(BACKEND_URL + '/export-react', {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ project_title: projectTitle, pages }),
+            });
+            if (!res.ok) throw new Error('Backend error: ' + res.status);
+
+            const reader  = res.body.getReader();
+            const decoder = new TextDecoder();
+            let   buf     = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buf += decoder.decode(value, { stream: true });
+                const parts = buf.split('\n\n'); buf = parts.pop();
+
+                for (const block of parts) {
+                    const trimmed = block.trim(); if (!trimmed) continue;
+                    const dataLines = trimmed.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6));
+                    if (!dataLines.length) continue;
+                    let ev; try { ev = JSON.parse(dataLines.join('\n')); } catch { continue; }
+
+                    const type    = ev.type;
+                    const payload = ev.payload || {};
+
+                    if (type === 'log') {
+                        appendLog(payload);
+                    } else if (type === 'export_start') {
+                        setProgress(0, payload.total_pages, '⚙️ Converting ' + payload.total_pages + ' page(s)...');
+                    } else if (type === 'export_page_start') {
+                        setProgress(payload.page_number - 1, payload.total_pages, 'Writing ' + payload.component_name + '...');
+                    } else if (type === 'export_page_done') {
+                        setProgress(payload.page_number, payload.total_pages, '✅ ' + payload.file_name);
+                    } else if (type === 'export_complete') {
+                        exportedFiles      = payload.files;
+                        exportProjectTitle = payload.project_title;
+
+                        const assetCount = Object.keys(exportedAssetBytes).length;
+                        const totalFiles = payload.file_count + assetCount;
+
+                        setProgress(payload.file_count, payload.file_count, 'Done!');
+
+                        // Show result card
+                        const resultCard = document.getElementById('ep-result');
+                        resultCard.classList.add('visible');
+                        document.getElementById('ep-result-msg').textContent =
+                            '✅ ' + totalFiles + ' files ready for "' + payload.project_title + '"' +
+                            (assetCount > 0 ? ' (inc. ' + assetCount + ' asset images)' : '');
+
+                        const fileListEl = document.getElementById('ep-result-files');
+                        fileListEl.innerHTML = '';
+                        Object.keys(payload.files).sort().forEach(fname => {
+                            const size = Math.round(payload.files[fname].length / 1024 * 10) / 10;
+                            const row  = document.createElement('div');
+                            row.style.cssText = 'display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1E1E2D;';
+                            row.innerHTML = '<span style="color:#6366F1;">' + fname + '</span><span style="color:#6B6B7B;">' + size + ' KB</span>';
+                            fileListEl.appendChild(row);
+                        });
+                        Object.keys(exportedAssetBytes).sort().forEach(assetPath => {
+                            const size = Math.round(exportedAssetBytes[assetPath].length / 1024 * 10) / 10;
+                            const row  = document.createElement('div');
+                            row.style.cssText = 'display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1E1E2D;';
+                            row.innerHTML = '<span style="color:#10B981;">🖼 ' + assetPath.replace('public/','') + '</span><span style="color:#6B6B7B;">' + size + ' KB</span>';
+                            fileListEl.appendChild(row);
+                        });
+
+                        document.getElementById('ep-gen-btn').disabled = false;
+
+                    } else if (type === 'export_error') {
+                        epSetProgressMsg('❌ Export failed: ' + payload.message);
+                        appendLog({ ts:'', level:'ERROR', tag:'EXPORT', message:payload.message });
+                        document.getElementById('ep-gen-btn').disabled = false;
+                    }
+                }
+            }
+
+        } catch (err) {
+            epSetProgressMsg('❌ Export failed: ' + err.message);
+            appendLog({ ts:'', level:'ERROR', tag:'EXPORT', message: err.message });
+            document.getElementById('ep-gen-btn').disabled = false;
+        }
+    }
+
+    // ── Inject panel context into pages array ────────────────────
+    // Priority system for navigation links:
+    //   TIER 1 — Explicit links from Export Panel (buttonLinks) → HARD RULES
+    //   TIER 2 — Frame name inference (already baked into nav_hint from code.js)
+    //   TIER 3 — LLM infers from context (no nav_hint at all → planner decides)
+    //
+    // Per-frame prompts (desc_hint) are always merged in when present.
+    function injectPanelContext(pages, ctx) {
+        const { framePrompts = {}, buttonLinks = [], globalPrompt = '' } = ctx;
+
+        const hasAnything = globalPrompt || Object.keys(framePrompts).length > 0 || buttonLinks.length > 0;
+
+        console.log(
+            '[EXPORT_PANEL] injectPanelContext:',
+            pages.length, 'pages |',
+            'globalPrompt:', globalPrompt ? '"' + globalPrompt.slice(0,40) + '…"' : 'none',
+            '| framePrompts:', Object.keys(framePrompts).length,
+            '| buttonLinks:', buttonLinks.length
+        );
+
+        if (!hasAnything) {
+            console.log('[EXPORT_PANEL] No panel context to inject — pages unchanged');
+            return pages;
+        }
+
+        return pages.map(page => {
+            const p = { ...page };
+
+            // ── DESC_HINT: per-frame + global prompt ─────────────
+            const framePrompt = framePrompts[p.name] || '';
+            const combined    = [globalPrompt, framePrompt].filter(Boolean).join('. ');
+            if (combined) {
+                p.desc_hint = p.desc_hint
+                    ? p.desc_hint + '. ' + combined
+                    : combined;
+                console.log(
+                    '[EXPORT_PANEL] [TIER-PROMPT] "' + p.name + '" → desc_hint:',
+                    '"' + combined.slice(0, 60) + (combined.length > 60 ? '…' : '') + '"'
+                );
+            }
+
+            // ── NAV_HINT TIER 1: Explicit Export Panel links ──────
+            // These OVERRIDE everything — formatted as @nav: BtnText -> TargetName
+            // planner_react.py treats these as STRICT overrides (hard rules).
+            const panelLinks = buttonLinks.filter(l => l.sourceFrameName === p.name);
+            if (panelLinks.length > 0) {
+                const navParts = panelLinks.map(l => l.sourceNodeName + ' -> ' + l.targetFrameName);
+                const navStr   = '@nav: ' + navParts.join(', ');
+
+                // TIER 1 overrides Tier 2 — replace existing nav_hint entirely
+                // so the old name-inferred hint doesn't conflict with user's intent.
+                const oldHint = p.nav_hint || '';
+                p.nav_hint = oldHint
+                    ? navStr + ', ' + oldHint   // prepend — Tier 1 comes first
+                    : navStr;
+
+                console.log(
+                    '[EXPORT_PANEL] [TIER-1 EXPLICIT] "' + p.name + '" → ' + panelLinks.length + ' link(s):',
+                    panelLinks.map(l => '"' + l.sourceNodeName + '" → "' + l.targetFrameName + '"').join(', ')
+                );
+            } else if (p.nav_hint) {
+                // TIER 2: name-inferred hints already in p.nav_hint from code.js
+                console.log(
+                    '[EXPORT_PANEL] [TIER-2 NAME-INFERRED] "' + p.name + '" → nav_hint:',
+                    '"' + p.nav_hint.slice(0, 80) + '"'
+                );
+            } else {
+                // TIER 3: no hints at all → LLM will infer from context
+                console.log(
+                    '[EXPORT_PANEL] [TIER-3 LLM-FALLBACK] "' + p.name + '" → no nav hints, LLM will infer'
+                );
+            }
+
+            return p;
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // DOWNLOAD ZIP  (unchanged logic)
+    // ═══════════════════════════════════════════════════════════════
+    async function downloadAllFiles() {
+        try {
+            document.getElementById('ep-result-msg').textContent = '📦 Building zip...';
+
+            const rootFiles = ['index.html','vite.config.js','package.json','tailwind.config.js','postcss.config.js'];
+            const textFiles = {};
+            Object.entries(exportedFiles).forEach(([fname, content]) => {
+                textFiles[rootFiles.includes(fname) ? fname : 'src/' + fname] = content;
+            });
+            textFiles['README.md'] = buildReadme(exportProjectTitle);
+
+            const binaryFiles = exportedAssetBytes || {};
+            const zipBytes    = buildZipSafe(textFiles, binaryFiles);
+            const blob        = new Blob([zipBytes], { type: 'application/zip' });
+            const url         = URL.createObjectURL(blob);
+            const a           = document.createElement('a');
+            a.href     = url;
+            a.download = exportProjectTitle.replace(/\s+/g, '-').toLowerCase() + '-react.zip';
+            a.click();
+            URL.revokeObjectURL(url);
+            document.getElementById('ep-result-msg').textContent = '✅ Downloaded!';
+        } catch (err) {
+            document.getElementById('ep-result-msg').textContent = '❌ Zip failed: ' + err.message;
+        }
+    }
+
+    function buildReadme(title) {
+        return '# ' + title + '\n\nGenerated by Worktual AI Figma Plugin.\n\n## Setup\n\n```bash\nnpm install\nnpm run dev\n```\n\nOpen http://localhost:9000\n';
+    }
+
+    // ── ZIP builder (unchanged) ────────────────────────────────────
+    function buildZipSafe(textFiles, binaryFiles) {
+        binaryFiles = binaryFiles || {};
+        const enc = new TextEncoder();
+        const crcTable = new Uint32Array(256);
+        for (let i = 0; i < 256; i++) {
+            let c = i;
+            for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+            crcTable[i] = c;
+        }
+        function crc32(data) {
+            let crc = 0xFFFFFFFF;
+            for (let k = 0; k < data.length; k++) crc = crcTable[(crc ^ data[k]) & 0xFF] ^ (crc >>> 8);
+            return (crc ^ 0xFFFFFFFF) >>> 0;
+        }
+        const now     = new Date();
+        const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+        const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+        const entries = [];
+        function addEntry(zipPath, dataBytes) {
+            entries.push({ nameBytes:enc.encode(zipPath), dataBytes, crc:crc32(dataBytes), dosDate, dosTime, localOffset:0 });
+        }
+        for (const [path, content] of Object.entries(textFiles)) addEntry(path, enc.encode(content));
+        for (const [path, bytes]   of Object.entries(binaryFiles)) addEntry(path, bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+
+        let totalSize = 0;
+        for (const e of entries) totalSize += 30 + e.nameBytes.length + e.dataBytes.length;
+        const cdStart = totalSize;
+        for (const e of entries) totalSize += 46 + e.nameBytes.length;
+        totalSize += 22;
+
+        const buf  = new Uint8Array(totalSize);
+        const view = new DataView(buf.buffer);
+        let pos    = 0;
+        function writeU8(v)  { buf[pos++] = v & 0xFF; }
+        function writeU16(v) { view.setUint16(pos, v, true); pos += 2; }
+        function writeU32(v) { view.setUint32(pos, v, true); pos += 4; }
+        function writeBytes(arr) { buf.set(arr, pos); pos += arr.length; }
+
+        for (const e of entries) {
+            e.localOffset = pos;
+            writeU32(0x04034B50); writeU16(20); writeU16(0); writeU16(0);
+            writeU16(e.dosTime); writeU16(e.dosDate); writeU32(e.crc);
+            writeU32(e.dataBytes.length); writeU32(e.dataBytes.length);
+            writeU16(e.nameBytes.length); writeU16(0);
+            writeBytes(e.nameBytes); writeBytes(e.dataBytes);
+        }
+
+        const cdOffset = pos; let cdSize = 0;
+        for (const e of entries) {
+            const start = pos;
+            writeU32(0x02014B50); writeU16(20); writeU16(20); writeU16(0); writeU16(0);
+            writeU16(e.dosTime); writeU16(e.dosDate); writeU32(e.crc);
+            writeU32(e.dataBytes.length); writeU32(e.dataBytes.length);
+            writeU16(e.nameBytes.length); writeU16(0); writeU16(0); writeU16(0); writeU16(0);
+            writeU32(0); writeU32(e.localOffset);
+            writeBytes(e.nameBytes);
+            cdSize += pos - start;
+        }
+        writeU32(0x06054B50); writeU16(0); writeU16(0);
+        writeU16(entries.length); writeU16(entries.length);
+        writeU32(cdSize); writeU32(cdOffset); writeU16(0);
+        return buf;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // LOG PANEL
+    // ═══════════════════════════════════════════════════════════════
+    let logEntries   = [];
+    let logPaused    = false;
+    let logFilter    = 'ALL';
+    let errorCount   = 0;
+
+    function pushLogEntry(entry) {
+        logEntries.push(entry);
+        const lvl = (entry.level || '').trim().toUpperCase();
+        if (lvl === 'ERROR') {
+            errorCount++;
+            const badge = document.getElementById('logsBadge');
+            badge.textContent = errorCount;
+            badge.style.display = 'inline-block';
+        }
+        if (!logPaused) renderLogFeed();
+        const lc = document.getElementById('logCountLabel');
+        if (lc) lc.textContent = logEntries.length + ' entries';
+    }
+
+    function renderLogFeed() {
+        const feed  = document.getElementById('logFeed');
+        const empty = document.getElementById('logFeedEmpty');
+        const filtered = logFilter === 'ALL'
+            ? logEntries
+            : logEntries.filter(e => (e.level || '').startsWith(logFilter));
+
+        if (filtered.length === 0) { if (empty) empty.style.display = 'block'; return; }
+        if (empty) empty.style.display = 'none';
+
+        // Only append last entry (don't re-render all)
+        const last = filtered[filtered.length - 1];
+        if (!last) return;
+        const lvl   = (last.level || '').trim().toUpperCase();
+        const colMap = { INFO:'#60A5FA', OK:'#34D399', WARN:'#FBBF24', ERROR:'#F87171', DEBUG:'#9CA3AF' };
+        const col   = colMap[lvl] || '#9CA3AF';
+        const row   = document.createElement('div');
+        row.className = 'log-row';
+        row.innerHTML =
+            '<span class="log-ts">' + escapeHtml(last.ts||'') + '</span>' +
+            '<span class="log-lvl" style="color:'+col+';">' + escapeHtml((last.level||'').trim()) + '</span>' +
+            '<span class="log-tag">' + escapeHtml((last.tag||'').padEnd(10).slice(0,10)) + '</span>' +
+            '<span class="log-msg">' + escapeHtml(last.message||'') + '</span>';
+        feed.appendChild(row);
+        feed.scrollTop = feed.scrollHeight;
+    }
+
+    function setLogFilter(filter) {
+        logFilter = filter;
+        document.querySelectorAll('.log-filter-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.level === filter || (filter === 'ALL' && b.dataset.level === 'ALL'));
+        });
+        // Full re-render
+        const feed = document.getElementById('logFeed');
+        const empty = document.getElementById('logFeedEmpty');
+        feed.innerHTML = '';
+        if (empty) feed.appendChild(empty);
+        const filtered = filter === 'ALL' ? logEntries : logEntries.filter(e => (e.level||'').startsWith(filter));
+        if (filtered.length === 0) { if (empty) empty.style.display = 'block'; return; }
+        if (empty) empty.style.display = 'none';
+        filtered.forEach(entry => {
+            const lvl = (entry.level||'').trim().toUpperCase();
+            const colMap = { INFO:'#60A5FA',OK:'#34D399',WARN:'#FBBF24',ERROR:'#F87171',DEBUG:'#9CA3AF' };
+            const col = colMap[lvl]||'#9CA3AF';
+            const row = document.createElement('div');
+            row.className = 'log-row';
+            row.innerHTML =
+                '<span class="log-ts">'+escapeHtml(entry.ts||'')+'</span>' +
+                '<span class="log-lvl" style="color:'+col+';">'+escapeHtml((entry.level||'').trim())+'</span>' +
+                '<span class="log-tag">'+escapeHtml((entry.tag||'').padEnd(10).slice(0,10))+'</span>' +
+                '<span class="log-msg">'+escapeHtml(entry.message||'')+'</span>';
+            feed.appendChild(row);
+        });
+        feed.scrollTop = feed.scrollHeight;
+    }
+
+    function toggleLogPause() {
+        logPaused = !logPaused;
+        const btn = document.getElementById('logPauseBtn');
+        btn.textContent = logPaused ? '▶ Resume' : '⏸ Pause';
+        if (!logPaused) renderLogFeed();
+    }
+
+    function clearLogs() {
+        logEntries = []; errorCount = 0;
+        const feed  = document.getElementById('logFeed');
+        const empty = document.getElementById('logFeedEmpty');
+        feed.innerHTML = ''; if (empty) feed.appendChild(empty); if (empty) empty.style.display = 'block';
+        const badge = document.getElementById('logsBadge'); badge.style.display = 'none';
+        const lc    = document.getElementById('logCountLabel'); if (lc) lc.textContent = '0 entries';
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // SHARED HELPERS
+    // ═══════════════════════════════════════════════════════════════
+    function toPlugin(msg) {
+        parent.postMessage({ pluginMessage: msg }, '*');
+    }
+
+    function setProcessing(v) {
+        isProcessing = v;
+        const btn  = document.getElementById('generateBtn');
+        const ind  = document.getElementById('processingIndicator');
+        const card = document.getElementById('statusCard');
+        if (btn)  btn.disabled  = v;
+        if (ind)  ind.style.display = v ? 'flex' : 'none';
+        if (card) card.style.display = v ? 'block' : 'block';
+    }
+
+    function setStatus(msg) {
+        const el = document.getElementById('status');
+        if (el) el.textContent = msg;
+    }
+
+    function updateSelectionCount(n) {
+        selectionCount = n;
+        const el = document.getElementById('selectionCount');
+        if (el) el.textContent = n;
+    }
+
+    function showMessage(text, type) {
+        const box = document.getElementById('messageBox');
+        box.className = 'message-box ' + type;
+        box.textContent = text; box.style.display = 'block';
+        setTimeout(() => { box.style.display = 'none'; }, 4000);
+    }
+
+    function escapeHtml(str) {
+        if (typeof str !== 'string') str = String(str || '');
+        return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function escapeAttr(str) {
+        if (typeof str !== 'string') str = String(str || '');
+        return str.replace(/'/g,"\\'").replace(/"/g,'&quot;');
+    }
+
+    function formatJSON(obj) {
+        try { return JSON.stringify(obj, null, 2); } catch { return String(obj); }
+    }
+
+    </script>
+
+    <!-- ── BULK LINK MODAL ── -->
+    <div id="ep-bulk-backdrop" class="ep-bulk-modal-backdrop">
+      <div class="ep-bulk-modal">
+        <h3>🔗 Link Button</h3>
+        <p class="ep-bulk-subtitle">Linking &ldquo;<span id="ep-bulk-btn-name"></span>&rdquo;</p>
+
+        <!-- Unique toggle -->
+        <div class="ep-bulk-unique-row">
+          <input type="checkbox" id="ep-bulk-unique-chk" checked
+                 onchange="epBulkToggleUnique(this.checked)">
+          <label for="ep-bulk-unique-chk" style="cursor:pointer;line-height:1.4;">
+            <strong>Unique</strong> &mdash; only link this button, ignore others with the same name
+          </label>
+        </div>
+
+        <!-- Matches list (hidden while Unique is checked) -->
+        <div id="ep-bulk-matches-section" style="display:none;flex-direction:column;gap:8px;">
+          <p style="font-size:11px;color:var(--text-tertiary);">
+            Other buttons with the same name &mdash; check to bulk-link:
+          </p>
+          <div class="ep-bulk-list" id="ep-bulk-list"></div>
+        </div>
+
+        <!-- Actions -->
+        <div class="ep-bulk-actions">
+          <button class="ep-bulk-btn-cancel" onclick="epBulkCancel()">Cancel</button>
+          <button class="ep-bulk-btn-link"   onclick="epBulkConfirm()">Link</button>
+        </div>
+      </div>
+    </div>
+
+</body>
+</html>
