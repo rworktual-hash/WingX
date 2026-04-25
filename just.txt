@@ -1,3 +1,0 @@
-currently i am working on a project creating my own figma plugin in figma desktop . my purpose of figma plugin i have an chatbot ui that allows user to ask queries like (create a website) , my plugin responses multiple web designs through my plugin. i am using gemini llm model and then currently running my local backend . 
-
-so now i would like to add new feauture add the new tab in my figma plugin that allows users can upload their design scrn shot or they can allow to upload any text document , that uploaded document , scrnhot or images that should need to analyzed based on that it should need to create a figma designs , i will give you my current important files please update the code .
