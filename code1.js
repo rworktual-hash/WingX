@@ -135,7 +135,7 @@ figma.on("selectionchange", function() {
 // ──────
 figma.ui.postMessage({
   type: "init",
-  backendUrl: "http://localhost:9000",
+  backendUrl: "https://wingx-2vpp.onrender.com",
   selectionCount: figma.currentPage.selection.length,
 });
 

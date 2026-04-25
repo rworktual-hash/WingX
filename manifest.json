@@ -12,7 +12,7 @@
   "ui": "ui.html",
   "networkAccess": {
     "allowedDomains": [
-      "http://localhost:9000",
+      "https://wingx-2vpp.onrender.com",
       "https://picsum.photos"
       ],
       "reasoning": "This plugin needs to access the backend API to generate UI layouts and images."
