@@ -197,6 +197,9 @@ var currentProjectStyleGroupLabel = "Project";
 var paintStyleRegistry = {};
 var localPaintStylesByName = {};
 var localPaintStylesPromise = null;
+var textStyleRegistry = {};
+var localTextStylesByName = {};
+var localTextStylesPromise = null;
 var renderCanvasPageRef = figma.currentPage;
 var WORKTUAL_DESIGN_PAGE_NAME = "Worktual AI Design";
 var WORKTUAL_COMPONENTS_PAGE_NAME = "Worktual AI Components";
@@ -299,6 +302,17 @@ function appendToRenderCanvas(node) {
   return node;
 }
 
+function isNodeAlive(node) {
+  if (!node) return false;
+  try {
+    if (node.removed) return false;
+    var _type = node.type;
+    return !!_type;
+  } catch (_err) {
+    return false;
+  }
+}
+
 function isComponentLibraryNode(node) {
   if (!node || node.removed) return false;
   if (node.type === "COMPONENT") return true;
@@ -337,6 +351,39 @@ function ensureLocalPaintStylesReady() {
     });
   }
   return localPaintStylesPromise;
+}
+
+function refreshLocalTextStylesCache() {
+  if (!figma.getLocalTextStylesAsync) {
+    localTextStylesByName = {};
+    return Promise.resolve(localTextStylesByName);
+  }
+
+  return figma.getLocalTextStylesAsync().then(function(styles) {
+    var byName = {};
+    var safeStyles = styles || [];
+    for (var i = 0; i < safeStyles.length; i++) {
+      var style = safeStyles[i];
+      if (style && style.name && !style.removed) {
+        byName[style.name] = style;
+      }
+    }
+    localTextStylesByName = byName;
+    return byName;
+  }).catch(function(err) {
+    console.warn("[TEXT_STYLE_CACHE] Failed to load local text styles:", err && err.message ? err.message : err);
+    localTextStylesByName = {};
+    return localTextStylesByName;
+  });
+}
+
+function ensureLocalTextStylesReady() {
+  if (!localTextStylesPromise) {
+    localTextStylesPromise = refreshLocalTextStylesCache().finally(function() {
+      localTextStylesPromise = null;
+    });
+  }
+  return localTextStylesPromise;
 }
 
 function getCanvasBounds() {
@@ -455,6 +502,185 @@ function buttonPaintVariant(data) {
   return "Filled";
 }
 
+function normalizeFontStyleName(fontWeight, fallback) {
+  var styleMap = {
+    "bold": "Bold",
+    "semibold": "Semi Bold",
+    "semi bold": "Semi Bold",
+    "medium": "Medium",
+    "regular": "Regular",
+    "normal": "Regular",
+  };
+  var raw = String(fontWeight || fallback || "regular").toLowerCase();
+  return styleMap[raw] || titleCaseSegment(raw, "Regular");
+}
+
+function inferTextStyleDescriptor(data) {
+  var source = data && data.styleSourceData ? data.styleSourceData : data;
+  if (!source) return { family: "Typography", variant: "Body" };
+
+  var blob = [
+    source.type || "",
+    source.componentKey || "",
+    source.componentName || "",
+    source.name || "",
+    source.styleGroupName || "",
+    source.styleGroupFamily || "",
+    source.textStyleName || "",
+    source.textRole || "",
+  ].join(" ").toLowerCase();
+
+  if (source.textStyleName) {
+    return { family: "Typography", variant: normalizeStyleTokenLabel(source.textStyleName, "Body") };
+  }
+  if (/\b(display|hero)\b/.test(blob)) return { family: "Typography", variant: "Display" };
+  if (/\b(headline|heading|title|h1)\b/.test(blob)) return { family: "Typography", variant: "Heading" };
+  if (/\b(subheading|subtitle|h2|h3)\b/.test(blob)) return { family: "Typography", variant: "Subheading" };
+  if (/\b(label|button label|cta label|menu label|nav label)\b/.test(blob)) return { family: "Typography", variant: "Label" };
+  if (/\b(caption|helper|meta|eyebrow|badge)\b/.test(blob)) return { family: "Typography", variant: "Caption" };
+  return { family: "Typography", variant: "Body" };
+}
+
+function resolveTextStyleConfig(data) {
+  var fontFamily = (data && data.fontFamily) || "Inter";
+  var fontStyle = normalizeFontStyleName(data && data.fontWeight, "Regular");
+  var fontSize = Math.max(1, Number(data && data.fontSize) || 16);
+  var lineHeight = Number(data && data.lineHeight);
+  var letterSpacing = Number(data && data.letterSpacing);
+  var align = String((data && (data.textAlign || data.textAlignHorizontal)) || "LEFT").toUpperCase();
+  var descriptor = inferTextStyleDescriptor(data);
+
+  return {
+    descriptor: descriptor,
+    fontFamily: fontFamily,
+    fontStyle: fontStyle,
+    fontSize: fontSize,
+    lineHeight: isFinite(lineHeight) && lineHeight > 0 ? lineHeight : 1.4,
+    letterSpacing: isFinite(letterSpacing) ? letterSpacing : 0,
+    align: align === "CENTER" || align === "RIGHT" || align === "JUSTIFIED" ? align : "LEFT",
+  };
+}
+
+function buildTextStyleName(data) {
+  var cfg = resolveTextStyleConfig(data);
+  return [
+    "WingX",
+    currentProjectStyleGroupLabel || "Project",
+    titleCaseSegment(cfg.descriptor.family, "Typography"),
+    titleCaseSegment(cfg.descriptor.variant, "Body"),
+    titleCaseSegment(cfg.fontFamily, "Inter"),
+    cfg.fontStyle,
+    Math.round(cfg.fontSize) + "px",
+    "LH " + Math.round(cfg.lineHeight * 100),
+    "LS " + Math.round(cfg.letterSpacing * 10) / 10,
+  ].join("/");
+}
+
+function textStyleRegistryKey(data) {
+  var cfg = resolveTextStyleConfig(data);
+  return [
+    currentProjectStyleGroupLabel || "Project",
+    cfg.descriptor.variant,
+    cfg.fontFamily,
+    cfg.fontStyle,
+    Math.round(cfg.fontSize * 10) / 10,
+    Math.round(cfg.lineHeight * 1000) / 1000,
+    Math.round(cfg.letterSpacing * 1000) / 1000,
+    cfg.align,
+  ].join("::").toLowerCase();
+}
+
+function getLocalTextStyleByName(name) {
+  if (!name) return null;
+  var style = localTextStylesByName[name];
+  return style && !style.removed ? style : null;
+}
+
+function applyTextStyleDefinition(style, data) {
+  if (!style || !data) return;
+  var cfg = resolveTextStyleConfig(data);
+  style.fontName = { family: cfg.fontFamily, style: cfg.fontStyle };
+  style.fontSize = cfg.fontSize;
+  style.lineHeight = { value: cfg.lineHeight * 100, unit: "PERCENT" };
+  style.letterSpacing = { value: cfg.letterSpacing, unit: "PIXELS" };
+}
+
+function ensureTextStyle(data) {
+  var name = buildTextStyleName(data);
+  var key = textStyleRegistryKey(data);
+  if (!name || !key) return null;
+  if (textStyleRegistry[key] && !textStyleRegistry[key].removed) return textStyleRegistry[key];
+
+  var existing = getLocalTextStyleByName(name);
+  if (existing) {
+    textStyleRegistry[key] = existing;
+    return existing;
+  }
+
+  try {
+    var style = figma.createTextStyle();
+    style.name = name;
+    applyTextStyleDefinition(style, data);
+    textStyleRegistry[key] = style;
+    localTextStylesByName[name] = style;
+    return style;
+  } catch (err) {
+    console.warn("[TEXT_STYLE] Failed to create style:", name, err && err.message ? err.message : err);
+    return null;
+  }
+}
+
+function bindTextStyle(node, data) {
+  if (!node || node.type !== "TEXT") return;
+  try {
+    if (node.textStyleId !== undefined) node.textStyleId = "";
+  } catch (_clearErr) {}
+
+  var style = ensureTextStyle(data);
+  if (!style) return;
+
+  try {
+    if (node.textStyleId !== undefined) node.textStyleId = style.id;
+    if (node.setPluginData) node.setPluginData("wt_text_style_name", style.name || "");
+  } catch (_bindErr) {}
+}
+
+function isCompactTextConstraint(data, width, height, textValue) {
+  var name = String((data && data.name) || "").toLowerCase();
+  var source = data && data.styleSourceData ? data.styleSourceData : data;
+  var blob = [
+    name,
+    String(source && source.type || ""),
+    String(source && source.componentKey || ""),
+    String(source && source.componentName || ""),
+    String(data && data.textRole || ""),
+    String(data && data.styleGroupRole || ""),
+  ].join(" ").toLowerCase();
+
+  if (/\b(button|badge|chip|pill|tag|tab|menu label|nav label|button-text)\b/.test(blob)) return true;
+  if ((height || 0) <= 44 && (width || 0) <= 220 && String(textValue || "").length <= 28) return true;
+  return false;
+}
+
+function isCodeLikeText(data, textValue) {
+  var name = String((data && data.name) || "").toLowerCase();
+  var role = String((data && data.textRole) || "").toLowerCase();
+  var blob = [name, role, String(textValue || "")].join(" ").toLowerCase();
+  if (/\b(code|diff|snippet|terminal|console|stack trace|json|tsx|jsx|typescript|javascript)\b/.test(blob)) return true;
+  if (String(textValue || "").indexOf("const ") >= 0 || String(textValue || "").indexOf("import ") >= 0) return true;
+  return false;
+}
+
+function normalizeStyleTokenLabel(value, fallback) {
+  var cleaned = String(value || fallback || "")
+    .replace(/[\\/]+/g, " ")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) cleaned = fallback || "Color";
+  return cleaned.replace(/\b[a-z]/g, function(ch) { return ch.toUpperCase(); });
+}
+
 function inferPaintStyleDescriptor(data, paintRole) {
   var source = data && data.styleSourceData ? data.styleSourceData : data;
   if (!source) return null;
@@ -465,31 +691,34 @@ function inferPaintStyleDescriptor(data, paintRole) {
     source.componentName || "",
     source.name || "",
     source.comp_type || "",
+    source.styleGroupName || "",
+    source.styleGroupFamily || "",
+    source.colorGroup || "",
+    source.colorToken || "",
     data && data.styleGroupRole ? data.styleGroupRole : "",
   ].join(" ").toLowerCase();
 
-  if (source.type === "button" || /\bactions\/button\b/.test(blob) || /\b(btn|button|cta|checkout|cart|subscribe|buy|purchase|save|submit|confirm|cancel|add to cart)\b/.test(blob)) {
-    return { family: "Actions", variant: buttonPaintVariant(source) };
+  var explicitToken = source.styleGroupName || source.styleGroupFamily || source.colorGroup || source.colorToken || "";
+  if (explicitToken) {
+    return { family: "Color Tokens", variant: normalizeStyleTokenLabel(explicitToken, "Shared") };
   }
-  if (/\bnavigation\/global|global nav|top nav|top bar|navbar|header nav\b/.test(blob)) {
-    return { family: "Navigation", variant: "Global" };
+
+  if (/\b(accent|brand|primary)\b/.test(blob)) {
+    return { family: "Color Tokens", variant: "Accent" };
   }
-  if (/\bnavigation\/secondary|secondary nav|secondary tabs|tab bar|sub nav\b/.test(blob)) {
-    return { family: "Navigation", variant: "Secondary" };
+  if (/\b(success|positive|approved|complete|done)\b/.test(blob)) {
+    return { family: "Color Tokens", variant: "Success" };
   }
-  if (/\bnavigation\/nav-item|nav item|menu item|sidebar item|tab item\b/.test(blob)) {
-    return { family: "Navigation", variant: "Item" };
+  if (/\b(warning|caution|pending)\b/.test(blob)) {
+    return { family: "Color Tokens", variant: "Warning" };
   }
-  if (/\bsidebar|side nav|sidenav|side panel|drawer\b/.test(blob)) {
-    return { family: "Navigation", variant: "Sidebar" };
+  if (/\b(error|danger|destructive|critical|failed)\b/.test(blob)) {
+    return { family: "Color Tokens", variant: "Danger" };
   }
-  if (/\bmodal|dialog|drawer body|drawer panel\b/.test(blob)) {
-    return { family: "Overlay", variant: "Modal" };
+  if (/\b(info|notice)\b/.test(blob)) {
+    return { family: "Color Tokens", variant: "Info" };
   }
-  if (/\bcard|tile|widget|panel|surface|stat card|metric card\b/.test(blob)) {
-    return { family: "Surface", variant: "Card" };
-  }
-  return null;
+  return { family: "Color Tokens", variant: "Shared" };
 }
 
 function buildPaintStyleName(data, paintRole, colorHex) {
@@ -497,14 +726,13 @@ function buildPaintStyleName(data, paintRole, colorHex) {
   var normalizedColor = normalizeColorHex(colorHex);
   if (!descriptor || !normalizedColor || normalizedColor === "transparent") return "";
 
-  var roleSegment = paintRole === "stroke" ? "Stroke" : (paintRole === "text" ? "Text" : "Fill");
   var colorSegment = normalizedColor.replace("#", "").toUpperCase();
   return [
     "WingX",
     currentProjectStyleGroupLabel || "Project",
-    titleCaseSegment(descriptor.family, "UI"),
+    titleCaseSegment(descriptor.family, "Color Tokens"),
     titleCaseSegment(descriptor.variant, "Base"),
-    roleSegment + " " + colorSegment,
+    "Color " + colorSegment,
   ].join("/");
 }
 
@@ -555,10 +783,59 @@ function bindPaintStyle(node, data, paintRole, colorHex) {
   try {
     if (paintRole === "stroke" && node.strokeStyleId !== undefined) {
       node.strokeStyleId = style.id;
+      if (node.setPluginData) node.setPluginData("wt_stroke_style_name", style.name || "");
     } else if (node.fillStyleId !== undefined) {
       node.fillStyleId = style.id;
+      if (node.setPluginData) {
+        var key = paintRole === "text" ? "wt_text_paint_style_name" : "wt_fill_style_name";
+        node.setPluginData(key, style.name || "");
+      }
     }
   } catch (_bindErr) {}
+}
+
+function rebindStoredStyles(node) {
+  if (!node || !node.getPluginData) return;
+  try {
+    var fillStyleName = node.getPluginData("wt_fill_style_name");
+    if (fillStyleName && node.fillStyleId !== undefined) {
+      var fillStyle = getLocalPaintStyleByName(fillStyleName);
+      if (fillStyle && !fillStyle.removed) node.fillStyleId = fillStyle.id;
+    }
+  } catch (_fillErr) {}
+
+  try {
+    var textPaintStyleName = node.getPluginData("wt_text_paint_style_name");
+    if (textPaintStyleName && node.fillStyleId !== undefined) {
+      var textPaintStyle = getLocalPaintStyleByName(textPaintStyleName);
+      if (textPaintStyle && !textPaintStyle.removed) node.fillStyleId = textPaintStyle.id;
+    }
+  } catch (_textPaintErr) {}
+
+  try {
+    var strokeStyleName = node.getPluginData("wt_stroke_style_name");
+    if (strokeStyleName && node.strokeStyleId !== undefined) {
+      var strokeStyle = getLocalPaintStyleByName(strokeStyleName);
+      if (strokeStyle && !strokeStyle.removed) node.strokeStyleId = strokeStyle.id;
+    }
+  } catch (_strokeErr) {}
+
+  try {
+    var textStyleName = node.getPluginData("wt_text_style_name");
+    if (textStyleName && node.type === "TEXT" && node.textStyleId !== undefined) {
+      var textStyle = getLocalTextStyleByName(textStyleName);
+      if (textStyle && !textStyle.removed) node.textStyleId = textStyle.id;
+    }
+  } catch (_textErr) {}
+}
+
+function rebindStoredStylesRecursively(root) {
+  if (!root) return;
+  rebindStoredStyles(root);
+  var children = root.children || [];
+  for (var i = 0; i < children.length; i++) {
+    rebindStoredStylesRecursively(children[i]);
+  }
 }
 
 // ── Link-picking mode state ───────────────────────────────────────
@@ -740,7 +1017,46 @@ function createAutoLayoutTextNode(options) {
   node.characters = String(cfg.text || "");
   node.fills = [{ type: "SOLID", color: cfg.color || { r: 0.1, g: 0.1, b: 0.12 } }];
   node.textAutoResize = "WIDTH_AND_HEIGHT";
+  bindTextStyle(node, {
+    textStyleName: cfg.textStyleName || cfg.name,
+    textRole: cfg.textRole || cfg.name,
+    fontFamily: cfg.fontName && cfg.fontName.family ? cfg.fontName.family : "Inter",
+    fontWeight: cfg.fontName && cfg.fontName.style ? cfg.fontName.style : "Regular",
+    fontSize: cfg.fontSize || 14,
+    lineHeight: cfg.lineHeight,
+    letterSpacing: cfg.letterSpacing,
+    textAlignHorizontal: cfg.textAlignHorizontal,
+    styleSourceData: cfg.styleSourceData,
+  });
+  if (cfg.colorHex || cfg.styleGroupName || cfg.styleGroupFamily) {
+    bindPaintStyle(node, cfg, "text", cfg.colorHex || "#1A1A1F");
+  }
   return node;
+}
+
+function normalizeAxisSizingMode(value, fallback) {
+  var raw = String(value || fallback || "").toUpperCase();
+  if (raw === "FIXED") return "FIXED";
+  if (raw === "AUTO" || raw === "HUG" || raw === "FILL" || raw === "FILL_CONTAINER") return "AUTO";
+  return fallback || "AUTO";
+}
+
+function normalizePrimaryAxisAlignItems(value, fallback) {
+  var raw = String(value || fallback || "").toUpperCase();
+  if (raw === "MIN" || raw === "START" || raw === "LEFT" || raw === "TOP") return "MIN";
+  if (raw === "MAX" || raw === "END" || raw === "RIGHT" || raw === "BOTTOM") return "MAX";
+  if (raw === "CENTER" || raw === "MIDDLE") return "CENTER";
+  if (raw === "SPACE_BETWEEN" || raw === "SPACEBETWEEN") return "SPACE_BETWEEN";
+  return fallback || "MIN";
+}
+
+function normalizeCounterAxisAlignItems(value, fallback) {
+  var raw = String(value || fallback || "").toUpperCase();
+  if (raw === "MIN" || raw === "START" || raw === "LEFT" || raw === "TOP") return "MIN";
+  if (raw === "MAX" || raw === "END" || raw === "RIGHT" || raw === "BOTTOM") return "MAX";
+  if (raw === "CENTER" || raw === "MIDDLE") return "CENTER";
+  if (raw === "BASELINE") return "BASELINE";
+  return fallback || "MIN";
 }
 
 function createAutoLayoutFrameNode(options, useComponent) {
@@ -748,10 +1064,10 @@ function createAutoLayoutFrameNode(options, useComponent) {
   var frame = useComponent ? figma.createComponent() : figma.createFrame();
   frame.name = cfg.name || (useComponent ? "Component" : "Frame");
   frame.layoutMode = cfg.direction || "VERTICAL";
-  frame.primaryAxisSizingMode = cfg.primaryAxisSizingMode || "AUTO";
-  frame.counterAxisSizingMode = cfg.counterAxisSizingMode || "AUTO";
-  frame.primaryAxisAlignItems = cfg.primaryAxisAlignItems || "MIN";
-  frame.counterAxisAlignItems = cfg.counterAxisAlignItems || "MIN";
+  frame.primaryAxisSizingMode = normalizeAxisSizingMode(cfg.primaryAxisSizingMode, "AUTO");
+  frame.counterAxisSizingMode = normalizeAxisSizingMode(cfg.counterAxisSizingMode, "AUTO");
+  frame.primaryAxisAlignItems = normalizePrimaryAxisAlignItems(cfg.primaryAxisAlignItems, "MIN");
+  frame.counterAxisAlignItems = normalizeCounterAxisAlignItems(cfg.counterAxisAlignItems, "MIN");
   frame.itemSpacing = cfg.spacing !== undefined ? cfg.spacing : 8;
   frame.paddingTop = cfg.paddingTop !== undefined ? cfg.paddingTop : (cfg.padding !== undefined ? cfg.padding : 12);
   frame.paddingRight = cfg.paddingRight !== undefined ? cfg.paddingRight : (cfg.padding !== undefined ? cfg.padding : 12);
@@ -1317,9 +1633,12 @@ function processRenderQueue() {
     ? renderFrameAdjacent
     : renderFrameInGroup;
 
-  ensureLocalPaintStylesReady().then(function() {
+  Promise.all([ensureLocalPaintStylesReady(), ensureLocalTextStylesReady()]).then(function() {
     return renderer(item.frame);
   }).then(function(renderedFrame) {
+    try {
+      rebindStoredStylesRecursively(renderedFrame);
+    } catch (_styleRebindErr) {}
     console.log("[RENDER] Done:", item.buf.page_name);
     figma.ui.postMessage({
       type:        "render_done",
@@ -1427,7 +1746,8 @@ function renderFrameAdjacent(frameData) {
     frame.fills = [{ type: 'SOLID', color: hexToRgb(frameData.backgroundColor || '#FFFFFF') }];
     frame.clipsContent = true;
 
-    return renderChildren(children, frame).then(function() {
+    return renderChildren(children, frame).then(function(renderedChildren) {
+      inferAndApplyRootFrameAutoLayout(frame, frameData, renderedChildren || []);
       appendToRenderCanvas(frame);
       var label = createScreenLabel(flowMeta.screen_title || frameData.name || 'Screen', frame.x, frame.y - 28);
       appendToRenderCanvas(label);
@@ -1517,7 +1837,8 @@ function renderFrameInGroup(frameData) {
     frame.clipsContent = true;
 
     var children = frameData.children || [];
-    return renderChildren(children, frame).then(function() {
+    return renderChildren(children, frame).then(function(renderedChildren) {
+      inferAndApplyRootFrameAutoLayout(frame, frameData, renderedChildren || []);
       appendToRenderCanvas(frame);
 
       var screenLabel = createScreenLabel(flowMeta.screen_title || frameData.name || 'Screen', frame.x, grp.y - 28);
@@ -1818,9 +2139,16 @@ function applyNodeMinSizeProps(node, data) {
   try {
     var minW = data.minWidth;
     var minH = data.minHeight;
+    var layoutMode = String(data.layoutMode || "").toUpperCase();
 
-    if (minW === undefined && data.layoutMode && data.width) minW = data.width;
-    if (minH === undefined && data.layoutMode && data.height) minH = data.height;
+    // For auto-layout containers, only lock the cross axis by default.
+    // Locking the content axis to the authored frame size makes shells
+    // look like fixed canvases and prevents natural growth/shrink.
+    if (layoutMode === "VERTICAL") {
+      if (minW === undefined && data.width) minW = data.width;
+    } else if (layoutMode === "HORIZONTAL") {
+      if (minH === undefined && data.height) minH = data.height;
+    }
 
     if (minW !== undefined && node.minWidth !== undefined) {
       node.minWidth = Math.max(1, Number(minW) || 1);
@@ -1829,6 +2157,66 @@ function applyNodeMinSizeProps(node, data) {
       node.minHeight = Math.max(1, Number(minH) || 1);
     }
   } catch (_err) {}
+}
+
+function hasButtonDescendantData(data) {
+  if (!data || !Array.isArray(data.children) || !data.children.length) return false;
+  for (var i = 0; i < data.children.length; i++) {
+    var child = data.children[i];
+    if (!child) continue;
+    if (String(child.type || "").toLowerCase() === "button") return true;
+    if (hasButtonDescendantData(child)) return true;
+  }
+  return false;
+}
+
+function isCardLikeContainerData(data) {
+  if (!data) return false;
+  var name = String(data.name || "").toLowerCase();
+  return /\b(card|product card|tile|panel|surface)\b/.test(name);
+}
+
+function hasCardLikeChildData(data) {
+  if (!data || !Array.isArray(data.children) || !data.children.length) return false;
+  for (var i = 0; i < data.children.length; i++) {
+    if (isCardLikeContainerData(data.children[i])) return true;
+  }
+  return false;
+}
+
+function shouldDistributeHorizontalCardRow(data) {
+  if (!data || !Array.isArray(data.children) || data.children.length < 3) return false;
+  var layoutMode = String(data.layoutMode || "").toUpperCase();
+  if (layoutMode !== "HORIZONTAL") return false;
+
+  var name = String(data.name || "").toLowerCase();
+  var rowLike = /\b(row|grid|catalog|listing|products|product row|cards)\b/.test(name);
+  if (!rowLike && !hasCardLikeChildData(data)) return false;
+
+  var totalChildWidth = 0;
+  var childCount = 0;
+  for (var i = 0; i < data.children.length; i++) {
+    var child = data.children[i];
+    if (!child || typeof child.width !== "number" || child.width <= 0) continue;
+    totalChildWidth += child.width;
+    childCount++;
+  }
+
+  if (childCount < 3 || typeof data.width !== "number" || data.width <= 0) return false;
+
+  var existingSpacing = typeof data.itemSpacing === "number" ? data.itemSpacing : 0;
+  var occupied = totalChildWidth + Math.max(0, childCount - 1) * existingSpacing;
+  var remaining = data.width - occupied;
+  return remaining >= 72;
+}
+
+function shouldLoosenVerticalCardHeight(data) {
+  if (!data) return false;
+  var layoutMode = String(data.layoutMode || "").toUpperCase();
+  if (layoutMode !== "VERTICAL") return false;
+  if (!isCardLikeContainerData(data)) return false;
+  if (!hasButtonDescendantData(data)) return false;
+  return typeof data.height === "number" && data.height > 0 && data.height <= 520;
 }
 
 function applyNodeSizingProps(node, data, parent) {
@@ -1842,8 +2230,12 @@ function applyNodeSizingProps(node, data, parent) {
     }
 
     if (node.type === "TEXT") {
+      var hasExplicitWidth = typeof data.width === "number" && data.width > 0;
+      var hasMinWidth = typeof data.minWidth === "number" && data.minWidth > 0;
       if (horizontal === "FILL") {
         node.layoutSizingHorizontal = "FILL";
+      } else if (hasExplicitWidth || hasMinWidth) {
+        node.layoutSizingHorizontal = "FIXED";
       } else {
         node.layoutSizingHorizontal = "HUG";
       }
@@ -1948,6 +2340,24 @@ function averageGap(sortedEntries, layoutMode) {
   return Math.max(0, Math.round(total / gaps.length));
 }
 
+function snapSpacingToScale(value) {
+  var scale = [0, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96, 120];
+  var numeric = Math.max(0, Math.round(Number(value) || 0));
+  var best = scale[0];
+  var bestDistance = Math.abs(numeric - best);
+
+  for (var i = 1; i < scale.length; i++) {
+    var candidate = scale[i];
+    var distance = Math.abs(numeric - candidate);
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
+}
+
 function inferContainerPadding(container, entries) {
   var minX = Infinity;
   var minY = Infinity;
@@ -1986,6 +2396,584 @@ function reorderAutoLayoutChildren(container, flowEntries, absoluteEntries) {
   }
 }
 
+function isLikelyOverlayEntry(entry, container) {
+  if (!entry || !entry.node || !container) return false;
+  if (entry.data && entry.data.layoutPositioning === "ABSOLUTE") return true;
+
+  var node = entry.node;
+  var name = String((entry.data && entry.data.name) || node.name || "").toLowerCase();
+  if (/\b(modal|dialog|popover|tooltip|toast|dropdown|menu|drawer|sheet|badge|chip|pill|indicator|annotation|callout|floating)\b/.test(name)) {
+    return true;
+  }
+
+  var widthRatio = container.width > 0 ? (node.width || 0) / container.width : 0;
+  var heightRatio = container.height > 0 ? (node.height || 0) / container.height : 0;
+  if (widthRatio < 0.4 && heightRatio < 0.35) {
+    var nearRight = isNear((node.x || 0) + (node.width || 0), container.width, 48);
+    var nearBottom = isNear((node.y || 0) + (node.height || 0), container.height, 48);
+    if (nearRight || nearBottom) return true;
+  }
+
+  return false;
+}
+
+function detectRootLayoutMode(container, flowEntries) {
+  if (!container || !flowEntries || flowEntries.length < 2) return "VERTICAL";
+
+  if (flowEntries.length === 2) {
+    var first = flowEntries[0].node;
+    var second = flowEntries[1].node;
+    var firstWidthRatio = container.width > 0 ? (first.width || 0) / container.width : 0;
+    var firstHeightRatio = container.height > 0 ? (first.height || 0) / container.height : 0;
+    var secondWidthRatio = container.width > 0 ? (second.width || 0) / container.width : 0;
+    var stackedVertically = Math.abs((first.x || 0) - (second.x || 0)) < 32;
+    var arrangedHorizontally = Math.abs((first.y || 0) - (second.y || 0)) < 48;
+
+    if (arrangedHorizontally &&
+        firstWidthRatio <= 0.35 &&
+        firstHeightRatio >= 0.6 &&
+        secondWidthRatio >= 0.45) {
+      return "HORIZONTAL";
+    }
+
+    if (stackedVertically) return "VERTICAL";
+  }
+
+  return inferAutoLayoutMode(flowEntries);
+}
+
+function isLikelyHeaderEntry(entry, container) {
+  if (!entry || !entry.node || !container) return false;
+  var node = entry.node;
+  var name = String((entry.data && entry.data.name) || node.name || "").toLowerCase();
+  var widthRatio = container.width > 0 ? (node.width || 0) / container.width : 0;
+  var height = node.height || 0;
+  return widthRatio >= 0.7 && height > 40 && height <= 160 &&
+    /\b(nav|navbar|topbar|top bar|header|masthead)\b/.test(name);
+}
+
+function isLikelyFooterEntry(entry, container) {
+  if (!entry || !entry.node || !container) return false;
+  var node = entry.node;
+  var name = String((entry.data && entry.data.name) || node.name || "").toLowerCase();
+  var widthRatio = container.width > 0 ? (node.width || 0) / container.width : 0;
+  var height = node.height || 0;
+  return widthRatio >= 0.6 && height > 24 && height <= 160 &&
+    /\b(footer|legal|copyright|bottom)\b/.test(name);
+}
+
+function isLikelyBottomContentEntry(entry, container) {
+  if (!entry || !entry.node || !container) return false;
+  var node = entry.node;
+  var name = String((entry.data && entry.data.name) || node.name || "").toLowerCase();
+  var bottomGap = Math.max(0, (container.height || 0) - ((node.y || 0) + (node.height || 0)));
+  return bottomGap <= 180 && /\b(similar|related|recommend|story|about|content|section|products|grid|cards|gallery|items|row)\b/.test(name);
+}
+
+function isLikelyMainContentEntry(entry, container) {
+  if (!entry || !entry.node || !container) return false;
+  var node = entry.node;
+  var name = String((entry.data && entry.data.name) || node.name || "").toLowerCase();
+  var widthRatio = container.width > 0 ? (node.width || 0) / container.width : 0;
+  var heightRatio = container.height > 0 ? (node.height || 0) / container.height : 0;
+  return widthRatio >= 0.6 && (
+    heightRatio >= 0.25 ||
+    /\b(main|content|body|wrapper|container|shell|canvas|surface)\b/.test(name)
+  );
+}
+
+function isSidebarLikeRootEntry(entry, container, index, total) {
+  if (!entry || !entry.node || !container) return false;
+  var node = entry.node;
+  var data = entry.data || {};
+  var name = String(data.name || node.name || "").toLowerCase();
+  var widthRatio = container.width > 0 ? (node.width || 0) / container.width : 0;
+  var heightRatio = container.height > 0 ? (node.height || 0) / container.height : 0;
+  var pinnedLeft = (node.x || 0) <= 48;
+  var sidebarNamed = /\b(sidebar|side nav|sidenav|left rail|recent chat|workspace|context|files|menu)\b/.test(name);
+
+  if (sidebarNamed && widthRatio >= 0.12 && widthRatio <= 0.4) return true;
+  if (index === 0 && total >= 2 && pinnedLeft && heightRatio >= 0.45 && widthRatio >= 0.14 && widthRatio <= 0.34) return true;
+  return false;
+}
+
+function isDarkHexColor(colorHex) {
+  var normalized = normalizeColorHex(colorHex);
+  if (!normalized || normalized === "transparent") return false;
+  var rgb = hexToRgb(normalized);
+  var luminance = (rgb.r * 0.299) + (rgb.g * 0.587) + (rgb.b * 0.114);
+  return luminance < 0.42;
+}
+
+function getNodeSolidFillHex(node) {
+  if (!node || !node.fills || !node.fills.length) return "";
+  try {
+    for (var i = 0; i < node.fills.length; i++) {
+      var fill = node.fills[i];
+      if (fill && fill.type === "SOLID" && fill.color) return rgbToHex(fill.color);
+    }
+  } catch (_err) {}
+  return "";
+}
+
+function inferDescendantSurfaceColor(node, depth) {
+  if (!node || depth <= 0) return "";
+  var ownFill = normalizeColorHex(getNodeSolidFillHex(node));
+  if (ownFill && ownFill !== "transparent") return ownFill;
+  var children = node.children || [];
+  for (var i = 0; i < children.length; i++) {
+    var child = children[i];
+    var inferred = inferDescendantSurfaceColor(child, depth - 1);
+    if (inferred && inferred !== "transparent") return inferred;
+  }
+  return "";
+}
+
+function ensureRootMainContentSurface(container, flowEntries, layoutMode) {
+  if (layoutMode !== "VERTICAL" || !container || !flowEntries || !flowEntries.length) return;
+  var mainIndex = getRootMainContentIndex(container, flowEntries, layoutMode);
+  if (mainIndex < 0) return;
+
+  var mainEntry = flowEntries[mainIndex];
+  var mainNode = mainEntry.node;
+  var mainData = mainEntry.data || {};
+  if (!mainNode || (mainNode.type !== "FRAME" && mainNode.type !== "COMPONENT" && mainNode.type !== "INSTANCE")) return;
+
+  var explicitBg = normalizeColorHex(mainData.backgroundColor);
+  var existingFill = normalizeColorHex(getNodeSolidFillHex(mainNode));
+  var rootBg = normalizeColorHex((container.getPluginData && container.getPluginData("wt_root_background")) || "");
+  if (!rootBg || rootBg === "transparent") rootBg = normalizeColorHex(getNodeSolidFillHex(container));
+
+  var targetSurface = explicitBg && explicitBg !== "transparent" ? explicitBg : existingFill;
+  if (!targetSurface || targetSurface === "transparent") {
+    targetSurface = normalizeColorHex(inferDescendantSurfaceColor(mainNode, 3));
+  }
+  if ((!targetSurface || targetSurface === "transparent") && isDarkHexColor(rootBg)) {
+    targetSurface = "#FAFAFA";
+  }
+
+  if (!targetSurface || targetSurface === "transparent") return;
+
+  try {
+    mainNode.fills = [{ type: "SOLID", color: hexToRgb(targetSurface) }];
+    bindPaintStyle(mainNode, mainData, "fill", targetSurface);
+  } catch (_fillErr) {}
+  try {
+    container.fills = [{ type: "SOLID", color: hexToRgb(targetSurface) }];
+    bindPaintStyle(container, { backgroundColor: targetSurface }, "fill", targetSurface);
+    if (container.setPluginData) {
+      container.setPluginData("wt_root_background", targetSurface);
+    }
+  } catch (_rootFillErr) {}
+}
+
+function isLikelyStructuredSectionNode(node, containerWidth) {
+  if (!node) return false;
+  var name = String(node.name || "").toLowerCase();
+  var widthRatio = containerWidth > 0 ? (node.width || 0) / containerWidth : 0;
+  return widthRatio >= 0.45 || /\b(table|list|grid|form|panel|section|card|toolbar|header|filters|tabs|results|content)\b/.test(name);
+}
+
+function shouldStretchRootVerticalChild(container, entry) {
+  if (!container || !entry || !entry.node) return false;
+  if (isLikelyHeaderEntry(entry, container) || isLikelyFooterEntry(entry, container)) return true;
+
+  var node = entry.node;
+  var widthRatio = container.width > 0 ? (node.width || 0) / container.width : 0;
+  return widthRatio >= 0.92;
+}
+
+function normalizeRootMainContentLayout(container, flowEntries, layoutMode) {
+  if (!container || !flowEntries || !flowEntries.length) return;
+
+  if (layoutMode === "HORIZONTAL") {
+    return;
+  }
+
+  if (layoutMode !== "VERTICAL") return;
+  var mainIndex = getRootMainContentIndex(container, flowEntries, layoutMode);
+  if (mainIndex < 0) return;
+
+  var mainEntry = flowEntries[mainIndex];
+  var mainNode = mainEntry.node;
+  if (!mainNode || (mainNode.type !== "FRAME" && mainNode.type !== "COMPONENT" && mainNode.type !== "INSTANCE")) return;
+
+  var mainChildren = mainNode.children || [];
+  var structuredChildren = 0;
+  for (var i = 0; i < mainChildren.length; i++) {
+    if (isLikelyStructuredSectionNode(mainChildren[i], mainNode.width || container.width || 0)) structuredChildren++;
+  }
+
+  try {
+    if (mainNode.layoutSizingHorizontal !== undefined) {
+      var mainWidthRatio = container.width > 0 ? (mainNode.width || 0) / container.width : 0;
+      mainNode.layoutSizingHorizontal = mainWidthRatio >= 0.92 ? "FILL" : "FIXED";
+    }
+    if (mainNode.layoutGrow !== undefined) mainNode.layoutGrow = 0;
+    if (mainNode.layoutMode && mainNode.layoutMode !== "NONE") {
+      mainNode.primaryAxisAlignItems = "MIN";
+      if (structuredChildren >= 2 || (mainNode.width || 0) >= ((container.width || 0) * 0.75)) {
+        mainNode.counterAxisAlignItems = "MIN";
+      }
+      if ((mainNode.itemSpacing || 0) === 0 && structuredChildren >= 2) {
+        mainNode.itemSpacing = 24;
+      }
+    }
+  } catch (_mainNormalizeErr) {}
+
+  for (var ci = 0; ci < mainChildren.length; ci++) {
+    var child = mainChildren[ci];
+    if (!child) continue;
+    try {
+      if (child.layoutSizingHorizontal !== undefined && isLikelyStructuredSectionNode(child, mainNode.width || container.width || 0)) {
+        child.layoutSizingHorizontal = "FILL";
+      }
+      if (child.layoutGrow !== undefined) child.layoutGrow = 0;
+    } catch (_childNormalizeErr) {}
+  }
+}
+
+function getRootMainContentIndex(container, flowEntries, layoutMode) {
+  var mainIndex = -1;
+  if (layoutMode === "VERTICAL") {
+    var candidateIndexes = [];
+    for (var ci = 0; ci < flowEntries.length; ci++) {
+      var candidate = flowEntries[ci];
+      if (isLikelyHeaderEntry(candidate, container)) continue;
+      if (isLikelyFooterEntry(candidate, container)) continue;
+      if (isLikelyMainContentEntry(candidate, container)) candidateIndexes.push(ci);
+    }
+    if (candidateIndexes.length === 1) {
+      mainIndex = candidateIndexes[0];
+    } else if (candidateIndexes.length === 0 && flowEntries.length === 2 && isLikelyHeaderEntry(flowEntries[0], container)) {
+      mainIndex = 1;
+    } else if (candidateIndexes.length === 0 && flowEntries.length === 3 && isLikelyHeaderEntry(flowEntries[0], container) && isLikelyFooterEntry(flowEntries[2], container)) {
+      mainIndex = 1;
+    }
+  }
+  return mainIndex;
+}
+
+function ensureRootMainContentWrapper(container, flowEntries, layoutMode) {
+  if (layoutMode !== "VERTICAL" || !container || !flowEntries || flowEntries.length < 2) return flowEntries;
+  if (getRootMainContentIndex(container, flowEntries, layoutMode) >= 0) return flowEntries;
+
+  var headerCount = 0;
+  if (flowEntries.length && isLikelyHeaderEntry(flowEntries[0], container)) headerCount = 1;
+  var footerCount = 0;
+  if (flowEntries.length - headerCount >= 1 && isLikelyFooterEntry(flowEntries[flowEntries.length - 1], container)) footerCount = 1;
+
+  var middleStart = headerCount;
+  var middleEnd = flowEntries.length - footerCount;
+  if (middleEnd - middleStart <= 1) return flowEntries;
+
+  var middleEntries = flowEntries.slice(middleStart, middleEnd);
+  var structuralCount = 0;
+  var minX = Infinity;
+  var minY = Infinity;
+  var maxX = -Infinity;
+  var maxY = -Infinity;
+
+  for (var i = 0; i < middleEntries.length; i++) {
+    var node = middleEntries[i].node;
+    if (!node) continue;
+    if (node.type === "FRAME" || node.type === "COMPONENT" || node.type === "INSTANCE") structuralCount++;
+    minX = Math.min(minX, node.x || 0);
+    minY = Math.min(minY, node.y || 0);
+    maxX = Math.max(maxX, (node.x || 0) + (node.width || 0));
+    maxY = Math.max(maxY, (node.y || 0) + (node.height || 0));
+  }
+
+  if (structuralCount < 1 || !isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return flowEntries;
+
+  var wrapper = figma.createFrame();
+  wrapper.name = "Main Content";
+  wrapper.fills = [];
+  wrapper.clipsContent = false;
+  wrapper.layoutMode = "VERTICAL";
+  wrapper.primaryAxisAlignItems = "MIN";
+  wrapper.counterAxisAlignItems = "MIN";
+  wrapper.primaryAxisSizingMode = "AUTO";
+  wrapper.counterAxisSizingMode = "FIXED";
+  wrapper.itemSpacing = snapSpacingToScale(averageGap(middleEntries, "VERTICAL"));
+  wrapper.resize(Math.max(1, Math.round(maxX - minX)), Math.max(1, Math.round(maxY - minY)));
+  wrapper.x = Math.round(minX);
+  wrapper.y = Math.round(minY);
+  appendToRenderCanvas(wrapper);
+
+  try {
+    var wrapperIndex = Math.min(headerCount, container.children.length);
+    container.insertChild(wrapperIndex, wrapper);
+  } catch (_insertErr) {
+    try { container.appendChild(wrapper); } catch (_appendErr) {}
+  }
+
+  for (var mi = 0; mi < middleEntries.length; mi++) {
+    var middleNode = middleEntries[mi].node;
+    if (!middleNode) continue;
+    var absX = middleNode.x || 0;
+    var absY = middleNode.y || 0;
+    try {
+      wrapper.appendChild(middleNode);
+      middleNode.x = Math.round(absX - wrapper.x);
+      middleNode.y = Math.round(absY - wrapper.y);
+    } catch (_moveErr) {}
+  }
+
+  var rebuilt = [];
+  for (var hi = 0; hi < headerCount; hi++) rebuilt.push(flowEntries[hi]);
+  rebuilt.push({
+    node: wrapper,
+    data: {
+      type: "frame",
+      name: "Main Content",
+      x: Math.round(minX),
+      y: Math.round(minY),
+      width: Math.max(1, Math.round(maxX - minX)),
+      height: Math.max(1, Math.round(maxY - minY)),
+      layoutMode: "VERTICAL",
+      itemSpacing: wrapper.itemSpacing,
+      backgroundColor: "transparent"
+    }
+  });
+  for (var fi = middleEnd; fi < flowEntries.length; fi++) rebuilt.push(flowEntries[fi]);
+  return rebuilt;
+}
+
+function applyRootMainContentMinHeight(container, flowEntries, layoutMode, rootMinHeight) {
+  if (layoutMode !== "VERTICAL" || !flowEntries || !flowEntries.length) return;
+  var mainIndex = getRootMainContentIndex(container, flowEntries, layoutMode);
+  if (mainIndex < 0) return;
+
+  var occupiedHeight = 0;
+  for (var i = 0; i < flowEntries.length; i++) {
+    if (i === mainIndex) continue;
+    occupiedHeight += Math.max(0, flowEntries[i].node.height || 0);
+  }
+  occupiedHeight += Math.max(0, (flowEntries.length - 1) * (container.itemSpacing || 0));
+
+  var reservedHeight = Math.max(0, rootMinHeight - occupiedHeight);
+  if (reservedHeight <= 0) return;
+
+  var mainNode = flowEntries[mainIndex].node;
+  try {
+    var footerSafeSpacing = 0;
+    for (var fi = 0; fi < flowEntries.length; fi++) {
+      if (isLikelyFooterEntry(flowEntries[fi], container)) {
+        footerSafeSpacing = 64;
+        break;
+      }
+    }
+    reservedHeight += footerSafeSpacing;
+    if (mainNode.minHeight !== undefined) {
+      mainNode.minHeight = Math.max(Number(mainNode.minHeight || 0) || 0, reservedHeight);
+    }
+    if ((mainNode.height || 0) < reservedHeight) {
+      mainNode.resize(mainNode.width || 1, reservedHeight);
+    }
+  } catch (_reserveErr) {}
+}
+
+function applyRootFlowChildSizing(container, flowEntries, layoutMode) {
+  var mainFillIndex = getRootMainContentIndex(container, flowEntries, layoutMode);
+
+  for (var i = 0; i < flowEntries.length; i++) {
+    var entry = flowEntries[i];
+    var node = entry.node;
+    var data = entry.data || {};
+
+    applyChildAutoLayoutProps(node, data, container);
+
+    try {
+      if (layoutMode === "VERTICAL") {
+        var stretchRootChild = shouldStretchRootVerticalChild(container, entry);
+        if (node.layoutSizingHorizontal !== undefined) {
+          node.layoutSizingHorizontal = stretchRootChild ? "FILL" : "FIXED";
+        }
+        if (node.layoutAlign !== undefined) {
+          node.layoutAlign = stretchRootChild ? "STRETCH" : "INHERIT";
+        }
+        if (i === mainFillIndex) {
+          if (node.layoutSizingVertical !== undefined && node.layoutSizingVertical === "FILL") {
+            node.layoutSizingVertical = "HUG";
+          }
+          if (node.layoutGrow !== undefined) node.layoutGrow = 0;
+        } else if (node.layoutGrow !== undefined) {
+          node.layoutGrow = 0;
+        }
+        if (isLikelyBottomContentEntry(entry, container) && node.minHeight !== undefined) {
+          try {
+            node.minHeight = Math.max(Number(node.minHeight || 0) || 0, Math.max(1, Math.round((node.height || data.height || 0) + 56)));
+          } catch (_bottomMinErr) {}
+        }
+      } else {
+        var widthRatio = container.width > 0 ? (node.width || 0) / container.width : 0;
+        var isSidebarLike = isSidebarLikeRootEntry(entry, container, i, flowEntries.length);
+        if (isSidebarLike) {
+          if (node.layoutSizingHorizontal !== undefined) node.layoutSizingHorizontal = "FIXED";
+          if (node.layoutGrow !== undefined) node.layoutGrow = 0;
+        } else {
+          if (node.layoutSizingHorizontal !== undefined) node.layoutSizingHorizontal = "FILL";
+          if (node.layoutGrow !== undefined) node.layoutGrow = 1;
+        }
+        if (node.layoutSizingVertical !== undefined) node.layoutSizingVertical = "FILL";
+      }
+    } catch (_sizingErr) {}
+  }
+}
+
+function setRootAutoLayoutMetadata(container, payload) {
+  if (!container || !container.setPluginData) return;
+  try {
+    container.setPluginData("wt_root_auto_layout", JSON.stringify(payload || {}));
+  } catch (_metaErr) {}
+}
+
+function applyRootAutoLayoutContainer(container, data, flowEntries, absoluteEntries, layoutMode, inferredPadding, spacing) {
+  try {
+    if (container.setPluginData) {
+      container.setPluginData("wt_root_background", normalizeColorHex((data && data.backgroundColor) || getNodeSolidFillHex(container) || ""));
+    }
+  } catch (_rootBgErr) {}
+  container.layoutMode = layoutMode;
+  container.primaryAxisAlignItems = "MIN";
+  container.counterAxisAlignItems = layoutMode === "VERTICAL" ? "CENTER" : "MIN";
+  container.primaryAxisSizingMode = layoutMode === "VERTICAL" ? "AUTO" : "FIXED";
+  container.counterAxisSizingMode = layoutMode === "VERTICAL" ? "FIXED" : "AUTO";
+  container.itemSpacing = spacing;
+  container.clipsContent = false;
+
+  // Preserve authored outer margins where possible instead of flattening
+  // every page to full bleed.
+  container.paddingLeft = 0;
+  container.paddingRight = 0;
+  container.paddingTop = 0;
+  container.paddingBottom = 0;
+
+  if ("layoutWrap" in container) {
+    try { container.layoutWrap = "NO_WRAP"; } catch (_wrapErr) {}
+  }
+
+  reorderAutoLayoutChildren(container, flowEntries, absoluteEntries);
+
+  for (var ai = 0; ai < absoluteEntries.length; ai++) {
+    try {
+      if (absoluteEntries[ai].node.layoutPositioning !== undefined) {
+        absoluteEntries[ai].node.layoutPositioning = "ABSOLUTE";
+      }
+    } catch (_absErr) {}
+  }
+
+  applyRootFlowChildSizing(container, flowEntries, layoutMode);
+  normalizeRootMainContentLayout(container, flowEntries, layoutMode);
+  ensureRootMainContentSurface(container, flowEntries, layoutMode);
+
+  try {
+    var rootMinHeight = Math.max(1080, Number((data && data.minHeight) || 0) || 0);
+    if (container.minHeight !== undefined) {
+      container.minHeight = rootMinHeight;
+    }
+    applyRootMainContentMinHeight(container, flowEntries, layoutMode, rootMinHeight);
+    if ((container.height || 0) < rootMinHeight) {
+      container.resize(container.width || (data && data.width) || 1, rootMinHeight);
+    }
+  } catch (_minHeightErr) {}
+
+  setRootAutoLayoutMetadata(container, {
+    applied: true,
+    layoutMode: layoutMode,
+    itemSpacing: spacing,
+    inferredPadding: inferredPadding,
+    flowChildren: flowEntries.length,
+    absoluteChildren: absoluteEntries.length
+  });
+}
+
+function inferAndApplyRootFrameAutoLayout(container, data, childEntries) {
+  if (!container || !childEntries || childEntries.length < 1) return;
+  if (data && data.autoLayout === false) {
+    setRootAutoLayoutMetadata(container, { applied: false, reason: "disabled" });
+    return;
+  }
+  if (data && data.layoutMode && data.layoutMode !== "NONE") {
+    setRootAutoLayoutMetadata(container, { applied: false, reason: "explicit-layout-mode", layoutMode: data.layoutMode });
+    return;
+  }
+
+  var flowEntries = [];
+  var absoluteEntries = [];
+
+  for (var i = 0; i < childEntries.length; i++) {
+    var entry = childEntries[i];
+    if (isBackgroundLikeEntry(entry, container) || isLikelyOverlayEntry(entry, container)) {
+      absoluteEntries.push(entry);
+    } else {
+      flowEntries.push(entry);
+    }
+  }
+
+  if (flowEntries.length < 1) {
+    setRootAutoLayoutMetadata(container, { applied: false, reason: "no-flow-children", absoluteChildren: absoluteEntries.length });
+    return;
+  }
+
+  // Root conversion is only safe when the majority of promoted flow
+  // children are actual structural containers, not loose text/shapes.
+  var structuralFlowCount = 0;
+  for (var s = 0; s < flowEntries.length; s++) {
+    var flowNode = flowEntries[s].node;
+    if (flowNode.type === "FRAME" || flowNode.type === "COMPONENT" || flowNode.type === "INSTANCE") {
+      structuralFlowCount++;
+    }
+  }
+
+  // Single-shell pages are still valid root auto-layout candidates.
+  if (flowEntries.length === 1) {
+    var singleEntry = flowEntries[0];
+    var singleNode = singleEntry.node;
+    var singleType = singleNode && singleNode.type;
+    var singleWidthRatio = container.width > 0 ? (singleNode.width || 0) / container.width : 0;
+    var singleHeightRatio = container.height > 0 ? (singleNode.height || 0) / container.height : 0;
+    var singleIsStructural = singleType === "FRAME" || singleType === "COMPONENT" || singleType === "INSTANCE";
+
+    if (!singleIsStructural || (singleWidthRatio < 0.55 && singleHeightRatio < 0.4)) {
+      setRootAutoLayoutMetadata(container, {
+        applied: false,
+        reason: "single-flow-child-not-structural",
+        flowChildren: 1,
+        absoluteChildren: absoluteEntries.length
+      });
+      return;
+    }
+
+    var singleLayoutMode = "VERTICAL";
+    var singlePadding = inferContainerPadding(container, flowEntries);
+    applyRootAutoLayoutContainer(container, data, flowEntries, absoluteEntries, singleLayoutMode, singlePadding, 0);
+    return;
+  }
+
+  if (structuralFlowCount < Math.max(2, Math.ceil(flowEntries.length * 0.5))) {
+    setRootAutoLayoutMetadata(container, {
+      applied: false,
+      reason: "insufficient-structural-flow",
+      flowChildren: flowEntries.length,
+      structuralFlowChildren: structuralFlowCount,
+      absoluteChildren: absoluteEntries.length
+    });
+    return;
+  }
+
+  var layoutMode = detectRootLayoutMode(container, flowEntries);
+  var sortedFlowEntries = sortEntriesForLayout(flowEntries, layoutMode);
+  sortedFlowEntries = ensureRootMainContentWrapper(container, sortedFlowEntries, layoutMode);
+  var spacing = 0;
+  if (!(layoutMode === "VERTICAL" && sortedFlowEntries.length >= 2 && isLikelyHeaderEntry(sortedFlowEntries[0], container))) {
+    spacing = snapSpacingToScale(averageGap(sortedFlowEntries, layoutMode));
+  }
+  var inferredPadding = inferContainerPadding(container, sortedFlowEntries);
+  applyRootAutoLayoutContainer(container, data, sortedFlowEntries, absoluteEntries, layoutMode, inferredPadding, spacing);
+}
+
 function inferAndApplyAutoLayout(container, data, childEntries) {
   if (!shouldInferAutoLayout(container, data, childEntries)) return;
 
@@ -1993,7 +2981,7 @@ function inferAndApplyAutoLayout(container, data, childEntries) {
   var absoluteEntries = [];
   for (var i = 0; i < childEntries.length; i++) {
     var entry = childEntries[i];
-    if (isBackgroundLikeEntry(entry, container)) absoluteEntries.push(entry);
+    if (isBackgroundLikeEntry(entry, container) || isLikelyOverlayEntry(entry, container)) absoluteEntries.push(entry);
     else flowEntries.push(entry);
   }
 
@@ -2014,6 +3002,7 @@ function inferAndApplyAutoLayout(container, data, childEntries) {
   container.paddingRight = padding.right;
   container.paddingTop = padding.top;
   container.paddingBottom = padding.bottom;
+  container.clipsContent = false;
 
   if ("layoutWrap" in container) {
     try { container.layoutWrap = "NO_WRAP"; } catch (_err) {}
@@ -2023,9 +3012,9 @@ function inferAndApplyAutoLayout(container, data, childEntries) {
 
   for (var ai = 0; ai < absoluteEntries.length; ai++) {
     try {
-      absoluteEntries[ai].node.layoutPositioning = "AUTO";
-      absoluteEntries[ai].node.x = 0;
-      absoluteEntries[ai].node.y = 0;
+      if (absoluteEntries[ai].node.layoutPositioning !== undefined) {
+        absoluteEntries[ai].node.layoutPositioning = "ABSOLUTE";
+      }
     } catch (_err) {}
   }
 
@@ -2052,13 +3041,29 @@ function applyInstanceOverrides(targetNode, sourceData) {
   var targetType = targetNode.type || "";
   if (targetType === "TEXT") {
     try {
-      var styleMap = { "bold": "Bold", "semibold": "Semi Bold", "medium": "Medium", "regular": "Regular" };
       if (sourceData.fontWeight || sourceData.fontSize || sourceData.text) {
-        var fw = (sourceData.fontWeight || "regular").toLowerCase();
-        targetNode.fontName = { family: "Inter", style: styleMap[fw] || "Regular" };
+        targetNode.fontName = {
+          family: sourceData.fontFamily || "Inter",
+          style: normalizeFontStyleName(sourceData.fontWeight, "Regular")
+        };
         if (sourceData.fontSize) targetNode.fontSize = sourceData.fontSize;
         if (sourceData.text !== undefined && sourceData.text !== null) targetNode.characters = String(sourceData.text);
       }
+      if (sourceData.lineHeight && typeof sourceData.lineHeight === "number") {
+        targetNode.lineHeight = { value: sourceData.lineHeight * 100, unit: "PERCENT" };
+      }
+      if (sourceData.letterSpacing && typeof sourceData.letterSpacing === "number") {
+        targetNode.letterSpacing = { value: sourceData.letterSpacing, unit: "PIXELS" };
+      }
+      if (sourceData.textAlign || sourceData.textAlignHorizontal) {
+        var align = String(sourceData.textAlign || sourceData.textAlignHorizontal).toUpperCase();
+        if (align === "CENTER" || align === "RIGHT" || align === "JUSTIFIED") {
+          targetNode.textAlignHorizontal = align;
+        } else {
+          targetNode.textAlignHorizontal = "LEFT";
+        }
+      }
+      bindTextStyle(targetNode, sourceData);
       if (sourceData.color) {
         targetNode.fills = [{ type: "SOLID", color: hexToRgb(sourceData.color) }];
         bindPaintStyle(targetNode, sourceData, "text", sourceData.color);
@@ -2096,6 +3101,7 @@ function applyContainerStyling(frame, data) {
 
   if (data.cornerRadius) frame.cornerRadius = data.cornerRadius;
   if (typeof data.clipsContent === "boolean") frame.clipsContent = data.clipsContent;
+  else if (data.layoutMode && data.layoutMode !== "NONE") frame.clipsContent = false;
   else frame.clipsContent = true;
 
   if (data.borderColor) {
@@ -2107,18 +3113,31 @@ function applyContainerStyling(frame, data) {
 
   if (data.layoutMode) {
     frame.layoutMode = data.layoutMode;
-    frame.primaryAxisAlignItems = data.primaryAxisAlignItems || "MIN";
-    frame.counterAxisAlignItems = data.counterAxisAlignItems || "MIN";
+    frame.primaryAxisAlignItems = normalizePrimaryAxisAlignItems(data.primaryAxisAlignItems, "MIN");
+    frame.counterAxisAlignItems = normalizeCounterAxisAlignItems(data.counterAxisAlignItems, "MIN");
     frame.itemSpacing = data.itemSpacing || 0;
     frame.paddingLeft = data.paddingLeft || 0;
     frame.paddingRight = data.paddingRight || 0;
     frame.paddingTop = data.paddingTop || 0;
     frame.paddingBottom = data.paddingBottom || 0;
-    if (data.primaryAxisSizingMode) frame.primaryAxisSizingMode = data.primaryAxisSizingMode;
-    if (data.counterAxisSizingMode) frame.counterAxisSizingMode = data.counterAxisSizingMode;
+    frame.primaryAxisSizingMode = normalizeAxisSizingMode(data.primaryAxisSizingMode, frame.primaryAxisSizingMode || "AUTO");
+    frame.counterAxisSizingMode = normalizeAxisSizingMode(data.counterAxisSizingMode, frame.counterAxisSizingMode || "AUTO");
+  }
+
+  if (shouldDistributeHorizontalCardRow(data)) {
+    try { frame.primaryAxisAlignItems = "SPACE_BETWEEN"; } catch (_rowAlignErr) {}
+    try { frame.itemSpacing = 0; } catch (_rowSpacingErr) {}
   }
 
   applyNodeSizingProps(frame, data, null);
+  if (shouldLoosenVerticalCardHeight(data)) {
+    try { frame.primaryAxisSizingMode = "AUTO"; } catch (_cardAxisErr) {}
+    try {
+      if (frame.minHeight !== undefined) {
+        frame.minHeight = Math.max(Number(frame.minHeight || 0) || 0, Math.max(1, Math.round((data.height || 0) + 64)));
+      }
+    } catch (_cardMinErr) {}
+  }
   applyNodeMinSizeProps(frame, data);
 }
 
@@ -2169,22 +3188,167 @@ function getComponentPageAsync() {
 }
 
 function componentRegistryKey(data) {
-  var raw = data.componentKey || data.componentName || data.name || "Reusable Component";
-  var normalized = String(raw).toLowerCase().replace(/[^a-z0-9/_-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  var normalized = componentBaseKey(data);
+  var variantKey = serializeComponentVariantProps(componentVariantProps(data));
+  var signature = shouldUseLooseComponentMatching(data) ? "" : componentDefinitionSignature(data);
+  if (variantKey) normalized += "::" + variantKey;
+  if (signature) normalized += "::" + signature;
   return currentProjectComponentScope ? (currentProjectComponentScope + "::" + normalized) : normalized;
+}
+
+function normalizeComponentKeySegment(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9/_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function componentBaseKey(data) {
+  var raw = normalizeComponentKeySegment(data && (data.componentKey || data.componentName || data.name || "reusable-component"));
+  if (!raw) return "reusable-component";
+  if (raw.indexOf("actions/button") === 0) return "actions/button";
+  if (raw.indexOf("navigation/nav-item") === 0) return "navigation/nav-item";
+  if (raw.indexOf("navigation/sidebar-item") === 0) return "navigation/sidebar-item";
+  return raw;
+}
+
+function titleCaseVariantValue(value, fallback) {
+  var raw = String(value || fallback || "").replace(/[_-]+/g, " ").trim();
+  if (!raw) raw = String(fallback || "");
+  return raw.replace(/\b\w/g, function(chr) { return chr.toUpperCase(); });
+}
+
+function componentVariantProps(data) {
+  if (!data) return null;
+
+  var baseKey = componentBaseKey(data);
+  var props = {};
+  var hasProps = false;
+
+  function assignProp(name, value, fallback) {
+    var normalized = String(value || fallback || "").trim();
+    if (!normalized) return;
+    props[name] = titleCaseVariantValue(normalized, fallback);
+    hasProps = true;
+  }
+
+  if (baseKey === "actions/button") {
+    var legacyParts = String(data.componentKey || "").split("/");
+    assignProp("Style", data.componentVariant || legacyParts[2], "Filled");
+    assignProp("State", data.componentState || data.state, "Default");
+    assignProp("Size", data.componentSize, "Md");
+    return hasProps ? props : null;
+  }
+
+  if (baseKey === "navigation/nav-item" || baseKey === "navigation/sidebar-item") {
+    assignProp("State", data.componentState || data.state, "Default");
+    assignProp("Size", data.componentSize, "Md");
+    return hasProps ? props : null;
+  }
+
+  return null;
+}
+
+function serializeComponentVariantProps(props) {
+  if (!props) return "";
+  var keys = Object.keys(props).sort();
+  var parts = [];
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
+    parts.push(
+      normalizeComponentKeySegment(key) + "=" + normalizeComponentKeySegment(props[key])
+    );
+  }
+  return parts.join("|");
+}
+
+function formatComponentVariantName(props) {
+  if (!props) return "";
+  var keys = Object.keys(props).sort();
+  var parts = [];
+  for (var i = 0; i < keys.length; i++) {
+    parts.push(keys[i] + "=" + props[keys[i]]);
+  }
+  return parts.join(", ");
+}
+
+function buildMasterComponentName(data) {
+  var baseName = data.componentName || data.name || "Reusable Component";
+  var variantName = formatComponentVariantName(componentVariantProps(data));
+  return normalizeNodeName(variantName ? (baseName + " / " + variantName) : baseName, "Reusable Component");
+}
+
+function shouldUseLooseComponentMatching(data) {
+  return !!componentVariantProps(data);
+}
+
+function summarizeComponentChildShape(nodeData, depth) {
+  if (!nodeData || depth <= 0) return "";
+  var type = String(nodeData.type || "").toLowerCase() || "node";
+  var layout = String(nodeData.layoutMode || "NONE").toUpperCase();
+  var children = Array.isArray(nodeData.children) ? nodeData.children : [];
+  var pieces = [];
+  for (var i = 0; i < children.length && i < 4; i++) {
+    pieces.push(summarizeComponentChildShape(children[i], depth - 1));
+  }
+  return type + "[" + layout + "](" + children.length + ":" + pieces.join(",") + ")";
+}
+
+function componentDefinitionSignature(data) {
+  if (!data) return "";
+  var type = String(data.type || "").toLowerCase() || "component";
+  var layout = String(data.layoutMode || "NONE").toUpperCase();
+  var width = Math.max(0, Math.round((Number(data.width) || 0) / 40) * 40);
+  var height = Math.max(0, Math.round((Number(data.height) || 0) / 20) * 20);
+  var childCount = Array.isArray(data.children) ? data.children.length : 0;
+  var shape = summarizeComponentChildShape(data, 2);
+  return [type, layout, width + "x" + height, childCount, shape].join("|");
+}
+
+function nodeStoredComponentSignature(node) {
+  if (!node || !node.getPluginData) return "";
+  try {
+    return node.getPluginData("wt_component_signature") || "";
+  } catch (_err) {
+    return "";
+  }
+}
+
+function isCompatibleMasterComponent(node, data) {
+  if (!node || !data) return false;
+  if (shouldUseLooseComponentMatching(data)) {
+    var wantedChildCount = Array.isArray(data.children) ? data.children.length : (String(data.type || "").toLowerCase() === "button" ? 1 : 0);
+    var existingChildCount = (node.children || []).length;
+    return existingChildCount === wantedChildCount;
+  }
+  var wantedSignature = componentDefinitionSignature(data);
+  var existingSignature = nodeStoredComponentSignature(node);
+  if (wantedSignature && existingSignature) return wantedSignature === existingSignature;
+
+  var targetWidth = Number(data.width) || 0;
+  var targetHeight = Number(data.height) || 0;
+  var widthClose = !targetWidth || Math.abs((node.width || 0) - targetWidth) <= 40;
+  var heightClose = !targetHeight || Math.abs((node.height || 0) - targetHeight) <= 24;
+  var nodeChildCount = (node.children || []).length;
+  var dataChildCount = Array.isArray(data.children) ? data.children.length : 0;
+  return widthClose && heightClose && nodeChildCount === dataChildCount;
 }
 
 function findExistingMasterComponent(key, data) {
   if (!key) return Promise.resolve(null);
-  if (componentMasterRegistry[key] && !componentMasterRegistry[key].removed) return Promise.resolve(componentMasterRegistry[key]);
+  if (componentMasterRegistry[key] && !componentMasterRegistry[key].removed && isCompatibleMasterComponent(componentMasterRegistry[key], data)) {
+    return Promise.resolve(componentMasterRegistry[key]);
+  }
   return getComponentPageAsync().then(function(page) {
     var children = page.children || [];
-    var wantedName = normalizeNodeName(data && (data.componentName || data.name), "");
+    var wantedName = buildMasterComponentName(data);
     var wantedScope = currentProjectComponentScope;
     for (var i = 0; i < children.length; i++) {
       var node = children[i];
       if (node.type !== "COMPONENT") continue;
       if (node.getPluginData && node.getPluginData("wt_component_key") === key) {
+        if (!isCompatibleMasterComponent(node, data)) continue;
         if (node.setPluginData && wantedScope && getNodeComponentScope(node) !== wantedScope) {
           node.setPluginData("wt_component_scope", wantedScope);
         }
@@ -2193,9 +3357,12 @@ function findExistingMasterComponent(key, data) {
       }
       if (wantedName && normalizeNodeName(node.name, "") === wantedName) {
         if (wantedScope && getNodeComponentScope(node) !== wantedScope) continue;
+        if (!isCompatibleMasterComponent(node, data)) continue;
         if (node.setPluginData) {
           node.setPluginData("wt_component_key", key);
           node.setPluginData("wt_component_scope", wantedScope || "");
+          node.setPluginData("wt_component_base_key", componentBaseKey(data));
+          node.setPluginData("wt_component_variant_props", serializeComponentVariantProps(componentVariantProps(data)));
         }
         componentMasterRegistry[key] = node;
         return node;
@@ -2295,15 +3462,23 @@ function createMasterFromDefinition(data) {
 function ensureMasterComponent(data) {
   var key = componentRegistryKey(data);
   return findExistingMasterComponent(key, data).then(function(existing) {
-    if (existing) return existing;
+    if (existing) {
+      try { rebindStoredStylesRecursively(existing); } catch (_existingRebindErr) {}
+      return existing;
+    }
 
     return createMasterFromDefinition(data).then(function(master) {
-      master.name = normalizeNodeName(data.componentName || data.name, "Reusable Component");
+      master.name = buildMasterComponentName(data);
       if (master.setPluginData) {
         master.setPluginData("wt_component_key", key);
         master.setPluginData("wt_component_scope", currentProjectComponentScope || "");
+        master.setPluginData("wt_component_signature", componentDefinitionSignature(data));
+        master.setPluginData("wt_component_base_key", componentBaseKey(data));
+        master.setPluginData("wt_component_variant_props", serializeComponentVariantProps(componentVariantProps(data)));
       }
+      try { rebindStoredStylesRecursively(master); } catch (_masterRebindErr) {}
       return placeMasterComponent(master).then(function(placedMaster) {
+        try { rebindStoredStylesRecursively(placedMaster); } catch (_placedMasterRebindErr) {}
         componentMasterRegistry[key] = placedMaster;
         return placedMaster;
       });
@@ -2319,11 +3494,14 @@ function createReusableComponentInstance(data, parent) {
     instance.y = data.y || 0;
     var targetW = Math.max(1, data.width || master.width || 1);
     var targetH = Math.max(1, data.height || master.height || 1);
-    if (Math.abs(instance.width - targetW) > 1 || Math.abs(instance.height - targetH) > 1) {
+    if (isNodeAlive(instance) && (Math.abs(instance.width - targetW) > 1 || Math.abs(instance.height - targetH) > 1)) {
       try { instance.resize(targetW, targetH); } catch (_err) {}
     }
-    if (data.opacity !== undefined && data.opacity !== null) instance.opacity = data.opacity;
-    applyInstanceOverrides(instance, data);
+    if (isNodeAlive(instance) && data.opacity !== undefined && data.opacity !== null) instance.opacity = data.opacity;
+    if (isNodeAlive(instance)) applyInstanceOverrides(instance, data);
+    if (isNodeAlive(instance)) {
+      try { rebindStoredStylesRecursively(instance); } catch (_instanceRebindErr) {}
+    }
     return instance;
   });
 }
@@ -2337,14 +3515,14 @@ function createText(data) {
   var targetWidth  = data.width;
   var targetHeight = typeof data.height === "number" ? Math.max(1, data.height) : 0;
 
-  var styleMap = { "bold": "Bold", "semibold": "Semi Bold", "medium": "Medium", "regular": "Regular" };
-  var fw = (data.fontWeight || "regular").toLowerCase();
-  var fontStyle = styleMap[fw] || "Regular";
-  text.fontName = { family: "Inter", style: fontStyle };
+  text.fontName = {
+    family: data.fontFamily || "Inter",
+    style: normalizeFontStyleName(data.fontWeight, "Regular")
+  };
   text.characters = String(data.text || "");
   text.fontSize = data.fontSize || 16;
   text.fills = [{ type: "SOLID", color: hexToRgb(data.color || "#000000") }];
-  if (data.styleSourceData || data.styleGroupRole) {
+  if (data.color || data.styleSourceData || data.styleGroupRole || data.styleGroupName || data.styleGroupFamily) {
     bindPaintStyle(text, data, "text", data.color || "#000000");
   }
 
@@ -2360,9 +3538,16 @@ function createText(data) {
     text.textAlignHorizontal = align;
   }
 
-  var naturalWidth = Math.max(1, text.width || 1);
+  var naturalWidth = 1;
+  try {
+    if (isNodeAlive(text)) naturalWidth = Math.max(1, text.width || 1);
+  } catch (_err) {
+    naturalWidth = Math.max(1, targetWidth || 1);
+  }
   var textValue    = String(data.text || "");
   var hasLineBreak = textValue.indexOf("\n") !== -1;
+  var isCompactText = isCompactTextConstraint(data, targetWidth, targetHeight, textValue);
+  var codeLikeText = isCodeLikeText(data, textValue);
   if (targetWidth && targetWidth < naturalWidth * 0.82 && naturalWidth < 640) {
     targetWidth = Math.min(640, Math.ceil(naturalWidth + 16));
   }
@@ -2371,32 +3556,92 @@ function createText(data) {
     targetWidth = Math.min(520, Math.ceil(naturalWidth + 12));
   }
 
+  if (targetWidth && !hasLineBreak && textValue.length > 28) {
+    var estimatedSingleLineWidth = Math.ceil(naturalWidth + 20);
+    if (estimatedSingleLineWidth <= 820) {
+      targetWidth = Math.max(targetWidth, estimatedSingleLineWidth);
+    }
+  }
+
+  if (targetWidth && codeLikeText) {
+    targetWidth = Math.max(targetWidth, Math.min(920, Math.ceil(naturalWidth + 24)));
+  }
+
+  // Protect long headings/body copy from collapsing into ultra-narrow columns.
+  // Compact controls like buttons can stay constrained, but readable content should
+  // prefer a wider box over aggressive font shrinking.
+  if (targetWidth && !isCompactText) {
+    var minimumReadableWidth = 0;
+    if (codeLikeText) minimumReadableWidth = 420;
+    else if ((data.fontSize || 16) >= 40) minimumReadableWidth = 320;
+    else if ((data.fontSize || 16) >= 28) minimumReadableWidth = 260;
+    else if ((data.fontSize || 16) >= 20) minimumReadableWidth = 220;
+    else if (textValue.length > 40) minimumReadableWidth = 240;
+    if (minimumReadableWidth) {
+      targetWidth = Math.max(targetWidth, minimumReadableWidth);
+    }
+  }
+
   if (targetWidth) {
     text.textAutoResize = "HEIGHT";
-    text.resize(targetWidth, Math.max(1, targetHeight || text.height || 20));
-    if (!hasLineBreak && text.height > (text.fontSize || 16) * 1.75 && naturalWidth < 720) {
+    if (isNodeAlive(text)) {
+      text.resize(targetWidth, Math.max(1, targetHeight || text.height || 20));
+    }
+    if (isNodeAlive(text) && !hasLineBreak && text.height > (text.fontSize || 16) * 1.75 && naturalWidth < 720) {
       var widened = Math.min(720, Math.ceil(naturalWidth + 20));
       if (widened > targetWidth) {
-        text.resize(widened, Math.max(1, targetHeight || text.height || 20));
+        if (isNodeAlive(text)) text.resize(widened, Math.max(1, targetHeight || text.height || 20));
       }
     }
+    try {
+      text.textTruncation = "DISABLED";
+      text.maxLines = null;
+    } catch (_wrapModeErr) {}
   } else {
     text.textAutoResize = "WIDTH_AND_HEIGHT";
+    try {
+      text.textTruncation = "DISABLED";
+      text.maxLines = null;
+    } catch (_freeWrapErr) {}
+  }
+
+  if (isNodeAlive(text) && targetWidth && text.height > Math.max(48, (text.fontSize || 16) * 3.6) && !hasLineBreak) {
+    text.textAutoResize = "HEIGHT";
   }
 
   if (targetWidth && targetHeight) {
-    var minFontSize = Math.max(10, Math.min(data.fontSize || 16, 12));
-    while (text.height > targetHeight && text.fontSize > minFontSize) {
-      text.fontSize = Math.max(minFontSize, text.fontSize - 1);
-      text.resize(targetWidth, targetHeight);
+    if (isCompactText) {
+      var authoredFontSize = Number(data.fontSize) || 16;
+      var minFontSize = Math.max(12, Math.round(authoredFontSize * 0.9));
+      while (isNodeAlive(text) && text.height > targetHeight && text.fontSize > minFontSize) {
+        text.fontSize = Math.max(minFontSize, text.fontSize - 1);
+        if (isNodeAlive(text)) text.resize(targetWidth, targetHeight);
+      }
+    } else if (isNodeAlive(text) && text.height > targetHeight) {
+      // Keep typography readable for normal content; let the text node grow instead
+      // of forcing the font down to unreadable sizes.
+      text.resize(targetWidth, Math.max(targetHeight, text.height));
     }
   }
 
-  if (targetHeight && text.textAlignVertical !== undefined) {
+  if (isNodeAlive(text) && targetHeight && text.textAlignVertical !== undefined) {
     text.textAlignVertical = "CENTER";
   }
 
-  applyNodeSizingProps(text, data, null);
+  bindTextStyle(text, data);
+  var effectiveTextData = Object.assign({}, data);
+  if (targetWidth) {
+    effectiveTextData.width = targetWidth;
+    if (!isCompactText) {
+      effectiveTextData.minWidth = Math.max(Number(effectiveTextData.minWidth || 0) || 0, targetWidth);
+    }
+  }
+  if (!isCompactText && isNodeAlive(text)) {
+    effectiveTextData.minHeight = Math.max(Number(effectiveTextData.minHeight || 0) || 0, Math.ceil(text.height || targetHeight || 0));
+  } else if (targetHeight) {
+    effectiveTextData.minHeight = Math.max(Number(effectiveTextData.minHeight || 0) || 0, targetHeight);
+  }
+  applyNodeSizingProps(text, effectiveTextData, null);
 
   return text;
 }
@@ -2441,7 +3686,9 @@ function createImage(data) {
       try {
         var bytes = new Uint8Array(response.bytes);
         var imgHash = figma.createImage(bytes).hash;
-        rect.fills = [{ type: "IMAGE", scaleMode: "FILL", imageHash: imgHash }];
+        if (isNodeAlive(rect)) {
+          rect.fills = [{ type: "IMAGE", scaleMode: "FILL", imageHash: imgHash }];
+        }
       } catch (e) {
         console.warn("[IMAGE] createImage failed:", e.message);
       }

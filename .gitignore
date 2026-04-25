@@ -12,6 +12,9 @@ out/
 # Python
 venv/
 .venv/
+backend/venv/
+backend/.venv/
+backend/__pycache__/
 __pycache__/
 *.py[cod]
 
@@ -23,4 +26,22 @@ backend/logs/
 
 # Local generated artifacts / backups
 *.zip
+
+code.js
+code.ts
+empty.json
+just.txt
+manifest.json
+package-lock.json
+package.json
+README.md
+tsconfig.json
+ui.html
+ui1.html
+WingX_mar31.zip
+
+backend/logs/
+
+
+
 
