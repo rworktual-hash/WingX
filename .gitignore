@@ -12,9 +12,7 @@ out/
 # Python
 venv/
 .venv/
-backend/venv/
-backend/.venv/
-backend/__pycache__/
+
 __pycache__/
 *.py[cod]
 
@@ -22,7 +20,6 @@ __pycache__/
 *.log
 *.log.*
 logs/
-backend/logs/
 
 # Local generated artifacts / backups
 *.zip
@@ -40,7 +37,6 @@ ui.html
 ui1.html
 WingX_mar31.zip
 
-backend/logs/
 
 
 
